@@ -86,6 +86,9 @@ jobs:
             echo "::error::$TOC has Version $TOC_VERSION but the tag is $TAG_VERSION."
             exit 1
           fi
+          # The packager would otherwise name the file after the tag and ship a
+          # stray "v" the hand-built zips never had.
+          echo "VERSION=$TAG_VERSION" >> "$GITHUB_ENV"
 
       # Wago refuses a release with no changelog (HTTP 422), and it does so after
       # CurseForge has already accepted the file - which strands a version live on
@@ -115,7 +118,7 @@ jobs:
           args: >-
             -d
             -g ${{ inputs.flavor == 'tbc' && 'bcc' || 'retail' }}
-            -n "StatCoach-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}-{project-version}"
+            -n "StatCoach-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}-${{ env.VERSION }}:${{ env.VERSION }}-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}"
 
       - name: Package and publish
         if: ${{ inputs.publish == true && inputs.wago_only != true }}
@@ -129,7 +132,7 @@ jobs:
             -p ${{ env.CF_PROJECT_ID }}
             -a ${{ env.WAGO_PROJECT_ID }}
             -g ${{ inputs.flavor == 'tbc' && 'bcc' || 'retail' }}
-            -n "StatCoach-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}-{project-version}"
+            -n "StatCoach-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}-${{ env.VERSION }}:${{ env.VERSION }}-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}"
 
       # The stores are uploaded one after another, so a version can be live on one
       # and rejected by the next. Re-running the step above would offer CurseForge
@@ -145,7 +148,7 @@ jobs:
           args: >-
             -a ${{ env.WAGO_PROJECT_ID }}
             -g ${{ inputs.flavor == 'tbc' && 'bcc' || 'retail' }}
-            -n "StatCoach-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}-{project-version}"
+            -n "StatCoach-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}-${{ env.VERSION }}:${{ env.VERSION }}-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}"
 
       - name: Keep the zip so a dry run can be installed and checked
         if: ${{ inputs.publish != true }}
@@ -153,4 +156,8 @@ jobs:
         with:
           name: StatCoach-${{ inputs.flavor }}-${{ inputs.tag }}
           path: .release/*.zip
-          if-no-files-found: warn
+          # .release is a hidden directory, and upload-artifact v4 skips hidden
+          # paths unless told otherwise - without this the dry run warns and
+          # silently uploads nothing, which is exactly what it is for.
+          include-hidden-files: true
+          if-no-files-found: error
