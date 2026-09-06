@@ -102,6 +102,28 @@ jobs:
           cat RELEASE_NOTES.md
           echo "::endgroup::"
 
+      # An unset token is how the packager is told to skip a store. That makes a
+      # publish run with no secrets configured look like a success while shipping
+      # to nobody - and it would still cut a GitHub release, so the version would
+      # appear done. Say so here instead.
+      - name: A publish run needs its store tokens
+        if: ${{ inputs.publish == true }}
+        env:
+          CF: ${{ secrets.CORGEFORGE_API_TOKEN }}
+          WAGO: ${{ secrets.WAGO_API_TOKEN }}
+        run: |
+          MISSING=""
+          if [ "${{ inputs.wago_only }}" != "true" ] && [ -z "$CF" ]; then MISSING="$MISSING CORGEFORGE_API_TOKEN"; fi
+          if [ -z "$WAGO" ]; then MISSING="$MISSING WAGO_API_TOKEN"; fi
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing repository secret(s):$MISSING"
+            echo "Without them the packager silently skips that store, so this run"
+            echo "would report success having published nothing."
+            echo "Add them under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          echo "Store tokens present."
+
       - name: Report what this run will do
         run: |
           if [ "${{ inputs.publish }}" = "true" ]; then
