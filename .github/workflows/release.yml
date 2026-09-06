@@ -1,0 +1,156 @@
+# Publishing is a deliberate act, never a side effect of pushing a tag.
+#
+#   git tag v1.1.21 && git push origin v1.1.21          <- marks the code, ships nothing
+#   gh workflow run Release -f tag=v1.1.21 -f flavor=tbc -f publish=false
+#                                                       <- dry run, builds the zip only
+#   gh workflow run Release -f tag=v1.1.21 -f flavor=tbc -f publish=true
+#                                                       <- ships it
+#
+# A dry run uploads the packaged zip as a workflow artifact, so it can be
+# downloaded and installed locally before anyone else ever sees it.
+#
+# ONE FLAVOR PER RUN. StatCoach's two clients ship on their own schedules -
+# 1.1.17, 1.1.18 and 1.1.19 were TBC only; 1.1.11 and 1.1.13 were retail only -
+# so a run that pushed both at once would put a version on a store that has no
+# notes for it. Run it twice when a version really does go to both.
+#
+# Repo secrets: CORGEFORGE_API_TOKEN, WAGO_API_TOKEN.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v1.1.21). Must already exist."
+        required: true
+        type: string
+      flavor:
+        description: "Which client this release is for"
+        required: true
+        type: choice
+        options: [tbc, retail]
+      publish:
+        description: "Actually upload to CurseForge and Wago"
+        required: true
+        type: boolean
+        default: false
+      wago_only:
+        description: "Wago only - for when CurseForge already took this version"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write      # the packager creates a GitHub Release when publishing
+
+env:
+  # Both stores identify the project by id. They live here rather than in the
+  # TOC files so there is one place to correct them, not two.
+  CF_PROJECT_ID: "1629267"
+  WAGO_PROJECT_ID: "kGryjxKy"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      # One source tree serves both clients, and each client must receive only
+      # its own files - exactly as the hand-built zips have always been. A retail
+      # package carrying StatCoach.toc would be loaded by a Classic client that
+      # was never meant to see this build.
+      - name: Reduce the tree to the ${{ inputs.flavor }} files
+        run: |
+          if [ "${{ inputs.flavor }}" = "tbc" ]; then
+            rm -f StatCoach_Mainline.toc StatCoachData_Retail.lua
+            echo "TBC package: StatCoach.toc + StatCoachData.lua"
+          else
+            rm -f StatCoach.toc
+            echo "Retail package: StatCoach_Mainline.toc + both data files"
+          fi
+          ls -1 *.toc *.lua
+
+      # The tag says one version, the TOC says another, and the store believes
+      # the TOC. Catch that here rather than in a player's out-of-date warning.
+      - name: Version in the TOC must match the tag
+        run: |
+          TOC=$(ls -1 StatCoach*.toc | head -1)
+          TOC_VERSION=$(grep -m1 '^## Version:' "$TOC" | sed 's/^## Version:[[:space:]]*//' | tr -d '\r')
+          TAG_VERSION="${{ inputs.tag }}"; TAG_VERSION="${TAG_VERSION#v}"
+          echo "$TOC says $TOC_VERSION, tag says $TAG_VERSION"
+          if [ "$TOC_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::$TOC has Version $TOC_VERSION but the tag is $TAG_VERSION."
+            exit 1
+          fi
+
+      # Wago refuses a release with no changelog (HTTP 422), and it does so after
+      # CurseForge has already accepted the file - which strands a version live on
+      # one store and missing on the other. The notes are checked before any
+      # upload, and printed so they are read before they are published.
+      - name: Release notes for this version and flavor
+        run: |
+          TAG_VERSION="${{ inputs.tag }}"; TAG_VERSION="${TAG_VERSION#v}"
+          python3 Tools/release_notes.py "$TAG_VERSION" "${{ inputs.flavor }}"
+          echo "::group::RELEASE_NOTES.md as it will appear on the stores"
+          cat RELEASE_NOTES.md
+          echo "::endgroup::"
+
+      - name: Report what this run will do
+        run: |
+          if [ "${{ inputs.publish }}" = "true" ]; then
+            echo "PUBLISHING ${{ inputs.tag }} (${{ inputs.flavor }}) to CurseForge and Wago."
+          else
+            echo "DRY RUN for ${{ inputs.tag }} (${{ inputs.flavor }}): packaging only, nothing is uploaded."
+          fi
+
+      - name: Package only (dry run)
+        if: ${{ inputs.publish != true }}
+        uses: BigWigsMods/packager@v2
+        with:
+          # -d = build the zip, upload nothing
+          args: >-
+            -d
+            -g ${{ inputs.flavor == 'tbc' && 'bcc' || 'retail' }}
+            -n "StatCoach-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}-{project-version}"
+
+      - name: Package and publish
+        if: ${{ inputs.publish == true && inputs.wago_only != true }}
+        uses: BigWigsMods/packager@v2
+        env:
+          CF_API_KEY: ${{ secrets.CORGEFORGE_API_TOKEN }}
+          WAGO_API_TOKEN: ${{ secrets.WAGO_API_TOKEN }}
+          GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: >-
+            -p ${{ env.CF_PROJECT_ID }}
+            -a ${{ env.WAGO_PROJECT_ID }}
+            -g ${{ inputs.flavor == 'tbc' && 'bcc' || 'retail' }}
+            -n "StatCoach-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}-{project-version}"
+
+      # The stores are uploaded one after another, so a version can be live on one
+      # and rejected by the next. Re-running the step above would offer CurseForge
+      # a file it already has. Leaving a token unset is how the packager is told to
+      # skip a store, so this run carries only the Wago one - and no GITHUB_OAUTH
+      # either, because the release already exists.
+      - name: Publish to Wago only
+        if: ${{ inputs.publish == true && inputs.wago_only == true }}
+        uses: BigWigsMods/packager@v2
+        env:
+          WAGO_API_TOKEN: ${{ secrets.WAGO_API_TOKEN }}
+        with:
+          args: >-
+            -a ${{ env.WAGO_PROJECT_ID }}
+            -g ${{ inputs.flavor == 'tbc' && 'bcc' || 'retail' }}
+            -n "StatCoach-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}-{project-version}"
+
+      - name: Keep the zip so a dry run can be installed and checked
+        if: ${{ inputs.publish != true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: StatCoach-${{ inputs.flavor }}-${{ inputs.tag }}
+          path: .release/*.zip
+          if-no-files-found: warn

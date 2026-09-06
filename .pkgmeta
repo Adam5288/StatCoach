@@ -1,0 +1,22 @@
+package-as: StatCoach
+
+# No stripped "nolib" variant: the four libraries under Libs/ are embedded on
+# purpose, and a nolib build would ship an addon with no minimap button.
+enable-nolib-creation: no
+
+# Without this the packager writes release notes from the git log, and commit
+# messages are working notes, not text for players. Release notes come from the
+# file the workflow generates for the version and flavor being shipped.
+manual-changelog:
+  filename: RELEASE_NOTES.md
+  markup-type: markdown
+
+# Repository furniture that must never reach a player's AddOns folder.
+ignore:
+  - CHANGELOG.md
+  - RELEASE_NOTES.md
+  - README.md
+  - Tools
+  - .github
+  - .gitattributes
+  - .gitignore
