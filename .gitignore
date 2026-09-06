@@ -1,0 +1,15 @@
+# Working files that never belong in the addon
+*.bak
+*.zip
+*.tmp
+
+# SavedVariables dumps, if one is ever copied here while debugging
+*.lua.bak
+StatCoachDB.lua
+
+# OS / editor
+desktop.ini
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/

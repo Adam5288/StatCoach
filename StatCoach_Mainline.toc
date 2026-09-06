@@ -1,0 +1,18 @@
+﻿## Interface: 120007, 120100
+## Title: StatCoach
+## Notes: Live stat priority and cap-aware gear compare (retail + classic)
+## Author: Adam
+## Version: 1.1.20
+## SavedVariables: StatCoachDB
+## IconTexture: Interface\Icons\INV_Misc_Book_11
+## X-Category: Combat
+
+# Minimap button via LibDBIcon (LibStub -> CallbackHandler -> LDB -> DBIcon order matters)
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
+
+StatCoachData.lua
+StatCoachData_Retail.lua
+StatCoach.lua
