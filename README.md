@@ -75,6 +75,12 @@ A few things worth knowing before you open one:
 
 Open an issue first if you want to discuss a larger feature before building it.
 
+**Contributions and the licence.** StatCoach is released under the licence below. By
+opening a pull request you confirm that the work is yours to give, and you grant
+permission for it to be included in StatCoach and released under that same licence. You
+keep the copyright to what you wrote — this only covers the permission needed to ship it
+as part of the addon, and you will be credited in the changelog.
+
 ## Notes
 
 - Stat priorities for all 27 TBC specs are cross-checked against Wowhead, Icy Veins and Warcraft Tavern guides; retail covers all 39 specs.
