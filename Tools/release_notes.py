@@ -59,8 +59,13 @@ def main():
             % (version, label)
         )
 
+    # Every release ends with the support line. It lives here, not in
+    # CHANGELOG.md, so it cannot be forgotten, cannot be worded two ways, and
+    # does not repeat down the file when someone reads the whole history.
+    footer = ("StatCoach is free and stays free. If you would like to support "
+              "the work: https://ko-fi.com/adam5288")
     io.open(OUT, "w", encoding="utf-8", newline="\n").write(
-        "# StatCoach %s (%s)\n\n%s\n" % (version, label, body)
+        "# StatCoach %s (%s)\n\n%s\n\n---\n\n%s\n" % (version, label, body, footer)
     )
     print("RELEASE_NOTES.md written for %s (%s), %d characters."
           % (version, label, len(body)))
