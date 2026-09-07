@@ -45,7 +45,8 @@ permissions:
 
 env:
   # Both stores identify the project by id. They live here rather than in the
-  # TOC files so there is one place to correct them, not two.
+  # TOC files so there is one place to correct them, not two. Both were read off
+  # the live project pages on 6 Sep 2026, not carried over from notes.
   CF_PROJECT_ID: "1629267"
   WAGO_PROJECT_ID: "kGryjxKy"
 
