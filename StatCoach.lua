@@ -2042,7 +2042,11 @@ local function RefreshEnchants(role, spec)
     local row, e = p.rows[i], list and list[i]
     if e then
       row.e = e
+      -- Retail keeps spell textures under C_Spell since 12.0; the bare
+      -- global is TBC's. Without the C_Spell branch every enchant row on
+      -- retail wore the generic icon (9 Sep 2026 migration scan).
       local tex = (e.id and GetItemIcon and GetItemIcon(e.id))
+        or (e.spell and C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(e.spell))
         or (e.spell and GetSpellTexture and GetSpellTexture(e.spell))
         or ENCH_ICON
       row.icon:SetTexture(tex or ENCH_ICON)
@@ -3963,8 +3967,18 @@ SlashCmdList["STATCOACH"] = function(msg)
     -- is how transcription errors get mistaken for bugs.
     local report = { at = date("%c"), locale = GetLocale(), build = select(1, GetBuildInfo()), lines = {} }
     -- Same lookup the aura check uses, recorded so the id can be confirmed too.
-    report.heroicPresence = tostring(GetSpellInfo(HEROIC_PRESENCE))
-    report.inspiringPresence = tostring(GetSpellInfo(INSPIRING_PRESENCE))
+    -- Retail removed the GetSpellInfo global in 12.0 and C_Spell.GetSpellInfo
+    -- hands back a table; TBC still has the old one. Prefer the new, fall
+    -- back to the old, and never call a nil (9 Sep 2026 migration scan).
+    local function spellName(id)
+      if C_Spell and C_Spell.GetSpellInfo then
+        local info = C_Spell.GetSpellInfo(id)
+        return info and info.name
+      end
+      return GetSpellInfo and GetSpellInfo(id)
+    end
+    report.heroicPresence = tostring(spellName(HEROIC_PRESENCE))
+    report.inspiringPresence = tostring(spellName(INSPIRING_PRESENCE))
     local diffs = 0
     report.patternCount = #PARSE_LOCALE
     print("|cffffd100StatCoach|r stat patterns (from client wordings | old English):")
@@ -3979,8 +3993,15 @@ SlashCmdList["STATCOACH"] = function(msg)
         local bits = {}
         for k in pairs(keys) do
           local x, y = a[k] or 0, b[k] or 0
-          if x ~= y then diff = true end
-          bits[#bits + 1] = k .. " " .. x .. "|" .. y .. (x ~= y and " <<" or "")
+          -- __socketColors is a TABLE of colour counts, not a number, and
+          -- this loop compares and prints numbers: an equipped item with an
+          -- empty socket crashed the whole report on "concatenate a table".
+          -- Reached first on retail (9 Sep 2026) once the GetSpellInfo call
+          -- above stopped failing ahead of it; TBC had the same hole.
+          if type(x) == "number" and type(y) == "number" then
+            if x ~= y then diff = true end
+            bits[#bits + 1] = k .. " " .. x .. "|" .. y .. (x ~= y and " <<" or "")
+          end
         end
         table.sort(bits)
         if diff then diffs = diffs + 1 end
