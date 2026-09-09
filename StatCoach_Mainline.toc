@@ -2,7 +2,7 @@
 ## Title: StatCoach
 ## Notes: Live stat priority and cap-aware gear compare (retail + classic)
 ## Author: Adam
-## Version: 1.1.20
+## Version: 1.1.21
 ## SavedVariables: StatCoachDB
 ## IconTexture: Interface\Icons\INV_Misc_Book_11
 ## X-Category: Combat

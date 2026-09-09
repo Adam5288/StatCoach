@@ -3,6 +3,23 @@
 
 ---
 
+# StatCoach 1.1.21 (Retail)
+
+*9 September 2026*
+
+## Enchant icons are back
+
+Every enchant row in the window had worn the same generic icon since 12.0 moved
+spell textures to a new place. Each row shows its own spell icon again.
+
+## /stc stats runs to the end again
+
+The stat-pattern report stopped before it started on 12.0, and once past that it
+could fail on an equipped item with an empty socket. Both are fixed: the report
+runs through and prints every pattern.
+
+---
+
 # StatCoach 1.1.20 (Retail)
 
 *1 September 2026*
