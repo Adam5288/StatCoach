@@ -554,7 +554,7 @@ local W = {
   SWORD2= (WSC and WSC.Sword2H) or 8,  STAFF  = (WSC and WSC.Staff)    or 10,
   FIST  = (WSC and WSC.Unarmed) or 13, DAGGER = (WSC and WSC.Dagger)   or 15,
   THROWN= (WSC and WSC.Thrown)  or 16, XBOW   = (WSC and WSC.Crossbow) or 18,
-  WAND  = (WSC and WSC.Wand)    or 19,
+  WAND  = (WSC and WSC.Wand)    or 19, GLAIVE = (WSC and WSC.Warglaive) or 9,
 }
 local function wset(...)
   local t = {}
@@ -567,23 +567,35 @@ end
 -- vanishing. Baseline is Classic proficiency (incl. what a weapon master can
 -- train - "not trained yet" is not the same as "never"), with the retail
 -- differences applied below.
--- MONK, DEMONHUNTER and EVOKER are deliberately absent: retail-only classes whose
--- lists I have not verified, and a wrong guess there hides real loot.
+-- Warglaives exist on retail only and belong to demon hunters alone, so every
+-- other class bans them; on a classic client the id simply never comes up.
+-- MONK, DEMONHUNTER and EVOKER were absent until 15 Sep 2026 (a monk got
+-- "UPGRADE" on a bow it can never draw). Their lists are the proficiencies
+-- each class launched with and has kept since:
+--   monk         fist, 1H axe, 1H mace, 1H sword, polearm, staff
+--   demon hunter warglaive, fist, 1H axe, 1H sword
+--   evoker       dagger, fist, 1H axe, 1H mace, 1H sword, staff
 local NO_WEAPON = {
-  WARRIOR     = wset(W.WAND),
-  PALADIN     = wset(W.DAGGER, W.STAFF, W.FIST, W.BOW, W.GUN, W.XBOW, W.THROWN, W.WAND),
-  HUNTER      = wset(W.MACE1, W.MACE2, W.WAND),
-  ROGUE       = wset(W.AXE1, W.AXE2, W.MACE2, W.SWORD2, W.POLE, W.STAFF, W.WAND),
+  WARRIOR     = wset(W.WAND, W.GLAIVE),
+  PALADIN     = wset(W.DAGGER, W.STAFF, W.FIST, W.BOW, W.GUN, W.XBOW, W.THROWN, W.WAND, W.GLAIVE),
+  HUNTER      = wset(W.MACE1, W.MACE2, W.WAND, W.GLAIVE),
+  ROGUE       = wset(W.AXE1, W.AXE2, W.MACE2, W.SWORD2, W.POLE, W.STAFF, W.WAND, W.GLAIVE),
   PRIEST      = wset(W.AXE1, W.AXE2, W.MACE2, W.SWORD1, W.SWORD2, W.POLE, W.FIST,
-                     W.BOW, W.GUN, W.XBOW, W.THROWN),
-  SHAMAN      = wset(W.SWORD1, W.SWORD2, W.POLE, W.BOW, W.GUN, W.XBOW, W.THROWN, W.WAND),
+                     W.BOW, W.GUN, W.XBOW, W.THROWN, W.GLAIVE),
+  SHAMAN      = wset(W.SWORD1, W.SWORD2, W.POLE, W.BOW, W.GUN, W.XBOW, W.THROWN, W.WAND, W.GLAIVE),
   MAGE        = wset(W.AXE1, W.AXE2, W.MACE1, W.MACE2, W.SWORD2, W.POLE, W.FIST,
-                     W.BOW, W.GUN, W.XBOW, W.THROWN),
+                     W.BOW, W.GUN, W.XBOW, W.THROWN, W.GLAIVE),
   WARLOCK     = wset(W.AXE1, W.AXE2, W.MACE1, W.MACE2, W.SWORD2, W.POLE, W.FIST,
-                     W.BOW, W.GUN, W.XBOW, W.THROWN),
+                     W.BOW, W.GUN, W.XBOW, W.THROWN, W.GLAIVE),
   DRUID       = wset(W.AXE1, W.AXE2, W.SWORD1, W.SWORD2, W.BOW, W.GUN, W.XBOW,
-                     W.THROWN, W.WAND),
-  DEATHKNIGHT = wset(W.DAGGER, W.STAFF, W.FIST, W.BOW, W.GUN, W.XBOW, W.THROWN, W.WAND),
+                     W.THROWN, W.WAND, W.GLAIVE),
+  DEATHKNIGHT = wset(W.DAGGER, W.STAFF, W.FIST, W.BOW, W.GUN, W.XBOW, W.THROWN, W.WAND, W.GLAIVE),
+  MONK        = wset(W.DAGGER, W.AXE2, W.MACE2, W.SWORD2, W.BOW, W.GUN, W.XBOW, W.THROWN,
+                     W.WAND, W.GLAIVE),
+  DEMONHUNTER = wset(W.DAGGER, W.MACE1, W.MACE2, W.AXE2, W.SWORD2, W.POLE, W.STAFF,
+                     W.BOW, W.GUN, W.XBOW, W.THROWN, W.WAND),
+  EVOKER      = wset(W.AXE2, W.MACE2, W.SWORD2, W.POLE, W.BOW, W.GUN, W.XBOW, W.THROWN,
+                     W.WAND, W.GLAIVE),
 }
 if RETAIL then
   NO_WEAPON.ROGUE[W.AXE1] = nil   -- one-handed axes are a rogue weapon since Wrath
@@ -1113,21 +1125,34 @@ end
 -- the classic path already has - with one retail twist: a Titan's Grip warrior
 -- already holding two of them is comparing for ONE slot, like a one-hander.
 -- Returns the slots to look at and whether their scores are summed.
-local RANGED_TWO_HANDED = { [W.BOW] = true, [W.GUN] = true, [W.XBOW] = true }
+local function retailTwoHander(link)
+  local _, _, _, loc, _, classID, subclassID = GetItemInfoInstant(link)
+  if loc == "INVTYPE_2HWEAPON" then return true end
+  if not RANGED_WEAPONS[loc] then return false end
+  return not (classID == WEAPON_CLASS_ID and subclassID == W.WAND)
+end
 local function retailSlots(link, equipLoc)
-  local _, _, _, _, _, classID, subclassID = GetItemInfoInstant(link)
-  local twoHanded = equipLoc == "INVTYPE_2HWEAPON"
-  if RANGED_WEAPONS[equipLoc] then
-    if classID == WEAPON_CLASS_ID and subclassID == W.WAND then return { 16 }, false end
-    twoHanded = RANGED_TWO_HANDED[subclassID] == true or classID ~= WEAPON_CLASS_ID
+  if RANGED_WEAPONS[equipLoc] and not retailTwoHander(link) then
+    equipLoc = "INVTYPE_WEAPONMAINHAND"      -- a wand is a main-hand one-hander here
   end
-  if not twoHanded then return SLOTMAP[equipLoc], false end
   local mh = GetInventoryItemLink("player", 16)
   local oh = GetInventoryItemLink("player", 17)
-  if mh and oh and select(4, GetItemInfoInstant(mh)) == "INVTYPE_2HWEAPON" then
-    return { 16, 17 }, false   -- Titan's Grip: the new 2H replaces the weaker one
+  local mhTwoHander = mh and retailTwoHander(mh)
+  if equipLoc == "INVTYPE_2HWEAPON" or RANGED_WEAPONS[equipLoc] then
+    if oh and mhTwoHander then return { 16, 17 }, false end   -- Titan's Grip: replaces the weaker one
+    return { 16, 17 }, true                                    -- takes both hands, must beat both
   end
-  return { 16, 17 }, true      -- it takes both hands, so it must beat both
+  if mhTwoHander and not oh then
+    -- The off-hand is not free: the two-hander is silently occupying it. An
+    -- off-hand item means giving up the 2H entirely - a loadout decision, so
+    -- stay silent rather than shout "BIG UPGRADE (empty slot)" at every shield
+    -- a hunter or a staff caster hovers. A one-hander competes with the 2H
+    -- itself, never with the "empty" slot.
+    if equipLoc == "INVTYPE_SHIELD" or equipLoc == "INVTYPE_WEAPONOFFHAND"
+       or equipLoc == "INVTYPE_HOLDABLE" then return nil end
+    if equipLoc == "INVTYPE_WEAPON" or equipLoc == "INVTYPE_WEAPONMAINHAND" then return { 16 }, false end
+  end
+  return SLOTMAP[equipLoc], false
 end
 
 local function retailEvalItem(link)
@@ -1139,6 +1164,7 @@ local function retailEvalItem(link)
   if not SLOTMAP[equipLoc] then return nil end
   if cannotEquip(link) or ClassLocked(link) then return nil end
   local slots, combined = retailSlots(link, equipLoc)
+  if not slots then return nil end
   local name = GetItemInfo(link) or (link:match("%[(.-)%]")) or "item"
   local itemScore = retailItemScore(link, sd)
   local eqScore
