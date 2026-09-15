@@ -3,6 +3,35 @@
 
 ---
 
+# StatCoach 1.1.22 (Retail)
+
+*15 September 2026*
+
+## Ranged weapons and two-handers are compared against both hands
+
+Retail has had no ranged slot since Warlords: bows, guns and crossbows sit in the
+main hand and take both hands, like any two-hander. StatCoach still compared them
+against the old ranged slot, which is always empty on a modern client, so a level-4
+vendor gun could read "BIG UPGRADE (empty slot)" next to two 259 daggers. A bow,
+gun, crossbow or two-hander now has to beat main hand and off-hand combined. A
+Titan's Grip warrior already holding two two-handers gets the new one compared
+against the weaker of the two.
+
+## The other way round is fixed too
+
+With a two-hander or a bow equipped, hovering a one-hander compared it against the
+empty off-hand and called it a big upgrade. A one-hander now competes with the
+two-hander itself, and off-hand items, shields and held items stay silent, since
+equipping one would mean giving up the two-hander. Wands count as one-handers.
+
+## Monks, demon hunters and evokers get their weapon rules
+
+The three retail-only classes had no list of the weapons they can never use, so a
+monk could see "UPGRADE" on a bow. Each now has its list, and warglaives are
+demon-hunter-only everywhere.
+
+---
+
 # StatCoach 1.1.21 (Retail)
 
 *9 September 2026*
