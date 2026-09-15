@@ -1105,22 +1105,51 @@ local function retailItemScore(link, sd)
   return score
 end
 
+-- Retail has had no ranged slot since Warlords: bows, guns and crossbows are
+-- two-handers that sit in the main hand, wands are one-handers there. Slot 18
+-- is always empty on a modern client, so the old map sent a level-4 vendor gun
+-- to "BIG UPGRADE (empty slot)" on a rogue wearing two 259 daggers (Shhz,
+-- 15 Sep 2026). A two-hander must beat main-hand + off-hand COMBINED - the rule
+-- the classic path already has - with one retail twist: a Titan's Grip warrior
+-- already holding two of them is comparing for ONE slot, like a one-hander.
+-- Returns the slots to look at and whether their scores are summed.
+local RANGED_TWO_HANDED = { [W.BOW] = true, [W.GUN] = true, [W.XBOW] = true }
+local function retailSlots(link, equipLoc)
+  local _, _, _, _, _, classID, subclassID = GetItemInfoInstant(link)
+  local twoHanded = equipLoc == "INVTYPE_2HWEAPON"
+  if RANGED_WEAPONS[equipLoc] then
+    if classID == WEAPON_CLASS_ID and subclassID == W.WAND then return { 16 }, false end
+    twoHanded = RANGED_TWO_HANDED[subclassID] == true or classID ~= WEAPON_CLASS_ID
+  end
+  if not twoHanded then return SLOTMAP[equipLoc], false end
+  local mh = GetInventoryItemLink("player", 16)
+  local oh = GetInventoryItemLink("player", 17)
+  if mh and oh and select(4, GetItemInfoInstant(mh)) == "INVTYPE_2HWEAPON" then
+    return { 16, 17 }, false   -- Titan's Grip: the new 2H replaces the weaker one
+  end
+  return { 16, 17 }, true      -- it takes both hands, so it must beat both
+end
+
 local function retailEvalItem(link)
   if type(GetItemInfoInstant) ~= "function" then return nil end
   local sd = retailSpecSD()
   if not sd then return nil end
   local equipLoc = select(4, GetItemInfoInstant(link))
   if not equipLoc then return nil end
-  local slots = SLOTMAP[equipLoc]
-  if not slots then return nil end
+  if not SLOTMAP[equipLoc] then return nil end
   if cannotEquip(link) or ClassLocked(link) then return nil end
+  local slots, combined = retailSlots(link, equipLoc)
   local name = GetItemInfo(link) or (link:match("%[(.-)%]")) or "item"
   local itemScore = retailItemScore(link, sd)
   local eqScore
   for _, slot in ipairs(slots) do
     local eqLink = GetInventoryItemLink("player", slot)
     local sc = eqLink and retailItemScore(eqLink, sd) or 0   -- empty slot scores 0
-    if not eqScore or sc < eqScore then eqScore = sc end
+    if combined then
+      eqScore = (eqScore or 0) + sc
+    elseif not eqScore or sc < eqScore then
+      eqScore = sc
+    end
   end
   local eq = eqScore or 0
   local delta = itemScore - eq
