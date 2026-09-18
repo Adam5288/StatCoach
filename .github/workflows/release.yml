@@ -9,7 +9,7 @@
 # A dry run uploads the packaged zip as a workflow artifact, so it can be
 # downloaded and installed locally before anyone else ever sees it.
 #
-# ONE FLAVOR PER RUN. StatCoach's two clients ship on their own schedules -
+# ONE FLAVOR PER RUN. StatCoach's clients ship on their own schedules -
 # 1.1.17, 1.1.18 and 1.1.19 were TBC only; 1.1.11 and 1.1.13 were retail only -
 # so a run that pushed both at once would put a version on a store that has no
 # notes for it. Run it twice when a version really does go to both.
@@ -28,7 +28,7 @@ on:
         description: "Which client this release is for"
         required: true
         type: choice
-        options: [tbc, retail]
+        options: [tbc, retail, forever]
       publish:
         description: "Actually upload to CurseForge and Wago"
         required: true
@@ -67,10 +67,23 @@ jobs:
       - name: Reduce the tree to the ${{ inputs.flavor }} files
         run: |
           if [ "${{ inputs.flavor }}" = "tbc" ]; then
-            rm -f StatCoach_Mainline.toc StatCoachData_Retail.lua
+            rm -f StatCoach_Mainline.toc StatCoach_Forever.toc StatCoachData_Retail.lua
+            echo "GAME=bcc" >> "$GITHUB_ENV"; echo "LABEL=TBC" >> "$GITHUB_ENV"
             echo "TBC package: StatCoach.toc + StatCoachData.lua"
+          elif [ "${{ inputs.flavor }}" = "forever" ]; then
+            # World of Warcraft: Forever is a Mainline-family client: it loads a
+            # _Mainline TOC or a plain one, and (measured on the beta, 18 Sep 2026)
+            # passes over _Camelot and _Forever. The game type is also due to be
+            # renamed before launch. So the Forever package carries ONE plain TOC,
+            # which needs no suffix to stay valid - and the packager refuses a
+            # _Mainline TOC that lists a Forever interface number.
+            rm -f StatCoach.toc StatCoach_Mainline.toc
+            mv StatCoach_Forever.toc StatCoach.toc
+            echo "GAME=forever" >> "$GITHUB_ENV"; echo "LABEL=Forever" >> "$GITHUB_ENV"
+            echo "Forever package: StatCoach.toc (interface 16001) + both data files"
           else
-            rm -f StatCoach.toc
+            rm -f StatCoach.toc StatCoach_Forever.toc
+            echo "GAME=retail" >> "$GITHUB_ENV"; echo "LABEL=Retail" >> "$GITHUB_ENV"
             echo "Retail package: StatCoach_Mainline.toc + both data files"
           fi
           ls -1 *.toc *.lua
@@ -140,8 +153,8 @@ jobs:
           # -d = build the zip, upload nothing
           args: >-
             -d
-            -g ${{ inputs.flavor == 'tbc' && 'bcc' || 'retail' }}
-            -n "StatCoach-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}-${{ env.VERSION }}:${{ env.VERSION }}-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}"
+            -g ${{ env.GAME }}
+            -n "StatCoach-${{ env.LABEL }}-${{ env.VERSION }}:${{ env.VERSION }}-${{ env.LABEL }}"
 
       - name: Package and publish
         if: ${{ inputs.publish == true && inputs.wago_only != true }}
@@ -154,8 +167,8 @@ jobs:
           args: >-
             -p ${{ env.CF_PROJECT_ID }}
             -a ${{ env.WAGO_PROJECT_ID }}
-            -g ${{ inputs.flavor == 'tbc' && 'bcc' || 'retail' }}
-            -n "StatCoach-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}-${{ env.VERSION }}:${{ env.VERSION }}-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}"
+            -g ${{ env.GAME }}
+            -n "StatCoach-${{ env.LABEL }}-${{ env.VERSION }}:${{ env.VERSION }}-${{ env.LABEL }}"
 
       # The stores are uploaded one after another, so a version can be live on one
       # and rejected by the next. Re-running the step above would offer CurseForge
@@ -170,8 +183,8 @@ jobs:
         with:
           args: >-
             -a ${{ env.WAGO_PROJECT_ID }}
-            -g ${{ inputs.flavor == 'tbc' && 'bcc' || 'retail' }}
-            -n "StatCoach-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}-${{ env.VERSION }}:${{ env.VERSION }}-${{ inputs.flavor == 'tbc' && 'TBC' || 'Retail' }}"
+            -g ${{ env.GAME }}
+            -n "StatCoach-${{ env.LABEL }}-${{ env.VERSION }}:${{ env.VERSION }}-${{ env.LABEL }}"
 
       - name: Keep the zip so a dry run can be installed and checked
         if: ${{ inputs.publish != true }}

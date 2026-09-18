@@ -22,6 +22,21 @@ local CR_VERSATILITY = _G.CR_VERSATILITY_DAMAGE_DONE or 29
 local RETAIL = (WOW_PROJECT_ID ~= nil and WOW_PROJECT_MAINLINE ~= nil
                 and WOW_PROJECT_ID == WOW_PROJECT_MAINLINE)
 
+-- World of Warcraft: Forever reports itself as Mainline (WOW_PROJECT_ID 1, loads the
+-- _Mainline TOC) but it is a Vanilla ruleset on that client: level 60, weapon skill
+-- and defense, no Mastery or Versatility. The interface number tells them apart.
+local FOREVER = RETAIL and (select(4, GetBuildInfo()) or 0) < 20000
+
+-- The item and spec functions live in namespaces now. The old globals are already
+-- gone on the newest Mainline-family client, while C_Item and C_SpecializationInfo
+-- exist on every client this file runs on. Namespace first, global as the fallback.
+local GetItemInfo              = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+local GetItemInfoInstant       = (C_Item and C_Item.GetItemInfoInstant) or GetItemInfoInstant
+local GetItemIcon              = (C_Item and C_Item.GetItemIconByID) or GetItemIcon
+local GetDetailedItemLevelInfo = (C_Item and C_Item.GetDetailedItemLevelInfo) or GetDetailedItemLevelInfo
+local GetSpecialization        = (C_SpecializationInfo and C_SpecializationInfo.GetSpecialization) or GetSpecialization
+local GetSpecializationInfo    = (C_SpecializationInfo and C_SpecializationInfo.GetSpecializationInfo) or GetSpecializationInfo
+
 local function num(v) return v or 0 end
 local function fmt(v) return string.format("%.1f", v or 0) end
 local ceil = math.ceil
@@ -1220,6 +1235,7 @@ local function CalibLog(link, equipLoc, r, role, weights, s)
 end
 
 local function evalItem(link)
+  if FOREVER then return nil end   -- no verdicts without data: see the FOREVER path
   if RETAIL then return retailEvalItem(link) end
   if not curCtx.role or type(GetItemInfoInstant) ~= "function" then return nil end
   local equipLoc = select(4, GetItemInfoInstant(link))   -- instant: works even uncached
@@ -2621,10 +2637,245 @@ local function RefreshRetail()
 end
 
 ------------------------------------------------------------------------
+-- FOREVER path. Everything here was read off the beta client (1.60.1, 18 Sep
+-- 2026), nothing is carried over from Vanilla by assumption. The skill list lives
+-- in C_SkillInfo and each line is a struct: name, rank, maxRank, modifier,
+-- tempPoints, isHeader, skillID, skillLineCategoryID. Category 6 is "Weapon
+-- Skills" and Defense (skill 95) sits in it. Lines are picked by id and category,
+-- never by name - names are localized. Stat priorities are deliberately absent:
+-- Forever's talents are new and unmapped, and a guessed weight is worse than none.
+------------------------------------------------------------------------
+local FOREVER_WEAPON_CATEGORY, FOREVER_DEFENSE_ID = 6, 95
+
+-- Weapon type -> skill line. This is Blizzard's own table, from the Forever
+-- character sheet (Blizzard_UIPanels_Game/Camelot/PaperDollFrameStats.lua, build
+-- 1.60.1.69913), which resolves the equipped weapon the same way: item id ->
+-- GetItemInfoInstant -> weapon subclass -> skill id, and Unarmed for an empty hand.
+local FOREVER_WEAPON_SKILL = {
+  [W.SWORD1] = 43,  [W.AXE1] = 44,  [W.BOW] = 45,    [W.GUN] = 46,   [W.MACE1] = 54,
+  [W.SWORD2] = 55,  [W.STAFF] = 136, [W.MACE2] = 160, [W.AXE2] = 172, [W.DAGGER] = 173,
+  [W.THROWN] = 176, [W.XBOW] = 226,  [W.WAND] = 228,  [W.POLE] = 229, [W.FIST] = 473,
+}
+-- Fist weapons: that same file maps them to 162 (Unarmed) while the constants next
+-- to it name 473 (Fist Weapons). Whichever of the two the character has wins.
+local FOREVER_UNARMED_ID, FOREVER_FIST_ID = 162, 473
+
+-- Skill ids of what is in the main hand, off-hand and ranged slot, in that order.
+-- "have" is the set of skill ids the character actually owns.
+local function ForeverEquippedSkills(have)
+  local ids, seen = {}, {}
+  for _, slot in ipairs({ 16, 17, 18 }) do
+    local id
+    local itemID = GetInventoryItemID("player", slot)
+    if itemID then
+      local _, _, _, _, _, classID, subclassID = GetItemInfoInstant(itemID)
+      if classID == WEAPON_CLASS_ID then id = FOREVER_WEAPON_SKILL[subclassID] end
+      if id == FOREVER_FIST_ID and not have[id] then id = FOREVER_UNARMED_ID end
+    elseif slot == 16 then
+      id = FOREVER_UNARMED_ID
+    end
+    if id and not seen[id] then seen[id] = true; ids[#ids + 1] = id end
+  end
+  return ids, seen
+end
+
+local function ForeverSkills()
+  local weapons, defense = {}, nil
+  if not (C_SkillInfo and C_SkillInfo.GetNumSkillLines and C_SkillInfo.GetSkillLineInfo) then
+    return weapons, defense
+  end
+  local n = safe(C_SkillInfo.GetNumSkillLines)
+  if type(n) ~= "number" then return weapons, defense end
+  for i = 1, n do
+    local s = safe(C_SkillInfo.GetSkillLineInfo, i)
+    if type(s) == "table" and not s.isHeader and s.skillLineCategoryID == FOREVER_WEAPON_CATEGORY then
+      local rank, max = desecret(s.rank), desecret(s.maxRank)
+      if rank and max and max > 0 then
+        local line = { id = s.skillID, name = s.name or "?", rank = rank, max = max,
+                       bonus = num(desecret(s.modifier)) + num(desecret(s.tempPoints)) }
+        if s.skillID == FOREVER_DEFENSE_ID then defense = line else weapons[#weapons + 1] = line end
+      end
+    end
+  end
+  -- What you are holding comes first, in slot order; after that, whatever you
+  -- have trained the most.
+  local have = {}
+  for _, line in ipairs(weapons) do have[line.id] = true end
+  local order, equipped = ForeverEquippedSkills(have)
+  local pos = {}
+  for i, id in ipairs(order) do pos[id] = i end
+  table.sort(weapons, function(a, b)
+    local pa, pb = pos[a.id], pos[b.id]
+    if pa or pb then
+      if pa and pb then return pa < pb end
+      return pa ~= nil
+    end
+    if a.rank ~= b.rank then return a.rank > b.rank end
+    return a.name < b.name
+  end)
+  for _, line in ipairs(weapons) do line.equipped = equipped[line.id] or false end
+  return weapons, defense
+end
+
+local function RefreshForever()
+  if not UI.frame then return end
+  local _, class = UnitClass("player")
+  curCtx.role = nil
+  curCtx.weights = {}
+  curCtx.retailSd = false         -- no verdicts on Forever until there is data to stand on
+  wipe(bagCache)
+  UI.gemBtn:Hide(); UI.enchBtn:Hide(); UI.ctxBtn:Hide()
+  UI.row1:Hide(); UI.row2:Hide()  -- class/spec browsing has nothing to browse yet
+  UI.radar:Hide()
+  UI.compareHeader:Hide(); UI.compareLine:Hide()
+
+  local level = UnitLevel("player") or 1
+  local cc = (RAID_CLASS_COLORS and class and RAID_CLASS_COLORS[class]) or { r = 1, g = 1, b = 1 }
+  local hex = string.format("%02x%02x%02x", cc.r * 255, cc.g * 255, cc.b * 255)
+  UI.info:SetText(string.format("Lv %d  |cff%s%s|r  \226\128\162  Forever", level, hex, class or "?"))
+
+  -- Your numbers, computed the way Forever's own character sheet computes them
+  -- (Blizzard_UIPanels_Game/Camelot/PaperDollFrameStats.lua): hit is rating bonus
+  -- PLUS the flat modifier, crit and haste come per attack type, block only counts
+  -- with a shield, and the sheet hides a modifier that is zero - so does this.
+  -- Which attack types a class sees is the one thing decided here: a mage has no
+  -- use for melee hit, a hunter wants ranged next to melee.
+  local lines = {}
+  local SPELL_ONLY = { MAGE = true, WARLOCK = true, PRIEST = true }
+  local HYBRID     = { PALADIN = true, SHAMAN = true, DRUID = true }
+  local function pct(v) return "|cffffffff" .. fmt(v) .. "%|r" end
+  local function sum(a, b)
+    a, b = desecret(a), desecret(b)
+    if a == nil and b == nil then return nil end
+    return num(a) + num(b)
+  end
+  local function typed(label, melee, ranged, spell, always)
+    local parts
+    if SPELL_ONLY[class] then parts = { { nil, spell } }
+    elseif class == "HUNTER" then parts = { { "ranged", ranged }, { "melee", melee } }
+    elseif HYBRID[class] then parts = { { "melee", melee }, { "spell", spell } }
+    else parts = { { nil, melee } } end
+    local any, out = false, {}
+    for _, part in ipairs(parts) do
+      local v = part[2]
+      if v == nil then
+        -- withheld in combat: say so for the lines that always show, and leave a
+        -- zero-hidden line hidden rather than advertise a stat you may not have
+        if always then out[#out + 1] = "|cff888888(combat)|r"; any = true end
+      else
+        if v > 0 then any = true end
+        out[#out + 1] = (part[1] and (part[1] .. " ") or "") .. pct(v)
+      end
+    end
+    if any or always then lines[#lines + 1] = label .. "  " .. table.concat(out, " / ") end
+  end
+  typed("Hit",
+    sum(safe(GetCombatRatingBonus, CR_HIT_MELEE),  safe(GetHitModifier)),
+    sum(safe(GetCombatRatingBonus, CR_HIT_RANGED), safe(GetRangedHitModifier)),
+    sum(safe(GetCombatRatingBonus, CR_HIT_SPELL),  safe(GetSpellHitModifier)), true)
+  typed("Crit", desecret(safe(GetCritChance)), desecret(safe(GetRangedCritChance)),
+    desecret(safe(GetSpellCritChance)), true)
+  local rangedHaste, ammoHaste = safe(GetRangedHaste)
+  typed("Haste", desecret(safe(GetMeleeHaste)), sum(rangedHaste, ammoHaste),
+    desecret(safe(UnitSpellHaste, "player")))
+  if not SPELL_ONLY[class] then
+    local exp, offExp = safe(GetExpertise)
+    exp, offExp = desecret(exp), desecret(offExp)
+    local _, offSpeed = safe(UnitAttackSpeed, "player")
+    if exp and exp > 0 then
+      lines[#lines + 1] = "Expertise  " .. pct(exp) .. ((offSpeed and offExp) and (" / " .. pct(offExp)) or "")
+    end
+    local arp = desecret(safe(GetArmorPenetration))
+    if arp and arp > 0 then lines[#lines + 1] = "Armor penetration  |cffffffff" .. math.floor(arp + 0.5) .. "|r" end
+  end
+  local function avoid(label, v)
+    v = desecret(v)
+    if v and v > 0 then lines[#lines + 1] = label .. "  " .. pct(v) end
+  end
+  avoid("Dodge", safe(GetDodgeChance))
+  avoid("Parry", safe(GetParryChance))
+  local hasShield = C_PaperDollInfo and C_PaperDollInfo.OffhandHasShield and safe(C_PaperDollInfo.OffhandHasShield)
+  if hasShield then
+    local chance, value = desecret(safe(GetBlockChance)), desecret(safe(GetShieldBlock))
+    if chance and chance > 0 then
+      lines[#lines + 1] = "Block  " .. pct(chance) .. (value and ("  |cff888888blocks " .. math.floor(value + 0.5) .. "|r") or "")
+    end
+  end
+  UI.prioHeader:SetText("|cffffd100YOUR NUMBERS|r")
+  for i = 1, PRIO_MAX do
+    local t, e = UI.prio[i], lines[i]
+    if e then t:SetText("|cffaaaaaa" .. e .. "|r"); t:Show()
+    else t:SetText(""); t:Hide() end
+  end
+
+  -- Bars: up to three weapon skills (equipped first), then Defense. Full = the
+  -- maximum the game reports for the skill right now.
+  local weapons, defense = ForeverSkills()
+  local show = {}
+  for i = 1, math.min(#weapons, defense and BAR_MAX - 1 or BAR_MAX) do show[#show + 1] = weapons[i] end
+  if defense then show[#show + 1] = defense end
+  UI.capHeader:SetText("|cffffd100WEAPON SKILL & DEFENSE|r  |cff888888(rank / max)|r")
+  UI.capHeader:Show()
+  for i = 1, BAR_MAX do
+    local b, s = UI.bars[i], show[i]
+    if s then
+      b.label:SetText(s.equipped and (s.name .. "  |cff888888equipped|r") or s.name)
+      b.bar.markFrac = nil
+      b.bar.mark:Hide()
+      b.bar:SetValue(math.min(1, s.rank / s.max))
+      if s.rank >= s.max then b.bar:SetStatusBarColor(0.2, 0.7, 0.2)   -- capped: green
+      else b.bar:SetStatusBarColor(0.85, 0.65, 0.1) end                -- room to grow: gold
+      local txt = string.format("%d / %d", s.rank, s.max)
+      if s.bonus > 0 then txt = txt .. string.format("  |cff40ff40(+%d)|r", s.bonus) end
+      b.val:SetText(txt)
+      b:Show()
+    else b:Hide() end
+  end
+
+  local top = weapons[1]
+  local now
+  if top and top.rank < top.max then
+    now = string.format("%s is %d of %d. Higher weapon skill increases your chance to hit, " ..
+      "and it only rises while you fight with that weapon.", top.name, top.rank, top.max)
+  elseif top then
+    now = top.name .. " is at its maximum for now."
+  else
+    now = "No weapon skills to read yet."
+  end
+  UI.nowLine:SetText("|cffffd100NOW:|r |cffffffff" .. now .. "|r")
+  UI.nowLine:Show()
+
+  UI.infoParts = {
+    "This is StatCoach on World of Warcraft: Forever. It shows what the game itself reports: " ..
+    "hit, crit, haste and avoidance worked out the way the character sheet does it, and your " ..
+    "weapon skills and Defense against their current maximum.",
+    "Stat priorities and upgrade verdicts are switched off here on purpose. Forever's talents and " ..
+    "items are new, and a priority list copied from Classic would be a guess. They come back once " ..
+    "there is real data to build them on.",
+  }
+  if UI.notesPopup and UI.notesPopup:IsShown() then RefreshNotes("Forever") end
+
+  local y = -34
+  PlaceRow(UI.info, y); y = y - math.max(UI.info:GetStringHeight() + 4, 18)
+  PlaceRow(UI.nowLine, y); y = y - (UI.nowLine:GetStringHeight() + 8)
+  PlaceRow(UI.prioHeader, y); y = y - math.max(UI.prioHeader:GetStringHeight() + 4, 16)
+  for i = 1, PRIO_MAX do
+    if UI.prio[i]:IsShown() then PlaceRow(UI.prio[i], y); y = y - 15 end
+  end
+  y = y - 6
+  PlaceRow(UI.capHeader, y); y = y - math.max(UI.capHeader:GetStringHeight() + 5, 18)
+  for i = 1, BAR_MAX do
+    if UI.bars[i]:IsShown() then PlaceRow(UI.bars[i], y); y = y - 34 end
+  end
+  UI.frame:SetHeight(math.max(-y + PAD, 300))
+end
+
+------------------------------------------------------------------------
 -- Refresh: fill everything in
 ------------------------------------------------------------------------
 function Refresh()
   if not UI.frame then return end
+  if FOREVER then return RefreshForever() end
   if RETAIL then return RefreshRetail() end
   local class, spec, context = Resolve()
   local cd = D.classes[class]
@@ -3847,7 +4098,7 @@ end
 -- names) but each carries `.stat` = "HASTE" / "CRITCHANCE" / "MASTERY" /
 -- "VERSATILITY", which is a cleaner gate than a name ever was.
 ------------------------------------------------------------------------
-if RETAIL then
+if RETAIL and not FOREVER then   -- the DR ladder is a level-90 retail rule
   local STAT_KEY = { CRITCHANCE = "Crit", HASTE = "Haste", MASTERY = "Mastery", VERSATILITY = "Versatility" }
 
   local function AddDRLines(tt, name)
@@ -3944,6 +4195,9 @@ ev:RegisterEvent("CHARACTER_POINTS_CHANGED")
 ev:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
 ev:RegisterEvent("COMBAT_RATING_UPDATE")
 if RETAIL then ev:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED") end  -- retail spec swaps
+-- Forever: skill-ups move the bars. pcall because registering an event the client
+-- does not know is an error, and the event list of that client is not published.
+if FOREVER then pcall(ev.RegisterEvent, ev, "SKILL_LINES_CHANGED") end
 ev:SetScript("OnEvent", function(_, event, arg1)
   if event == "ADDON_LOADED" and arg1 == ADDON then
     StatCoachDB = StatCoachDB or {}

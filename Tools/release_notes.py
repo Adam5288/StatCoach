@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Pull ONE version's notes out of CHANGELOG.md into RELEASE_NOTES.md.
 
-The packager ships whatever RELEASE_NOTES.md contains. StatCoach releases its two
+The packager ships whatever RELEASE_NOTES.md contains. StatCoach releases its
 flavors on their own schedules - 1.1.17, 1.1.18 and 1.1.19 were TBC only, 1.1.11
 and 1.1.13 were retail only - so the notes for a release are the section for that
 version AND that flavor, never both.
@@ -22,7 +22,8 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHANGELOG = os.path.join(HERE, "CHANGELOG.md")
 OUT = os.path.join(HERE, "RELEASE_NOTES.md")
 
-FLAVOR_LABEL = {"tbc": "TBC", "bcc": "TBC", "retail": "Retail", "mainline": "Retail"}
+FLAVOR_LABEL = {"tbc": "TBC", "bcc": "TBC", "retail": "Retail", "mainline": "Retail",
+                "forever": "Forever"}
 
 
 def section(version, label):
@@ -43,12 +44,12 @@ def section(version, label):
 
 def main():
     if len(sys.argv) != 3:
-        sys.exit("usage: release_notes.py <version> <tbc|retail>")
+        sys.exit("usage: release_notes.py <version> <tbc|retail|forever>")
     version = sys.argv[1].lstrip("vV")
     flavor = sys.argv[2].lower()
     label = FLAVOR_LABEL.get(flavor)
     if not label:
-        sys.exit("unknown flavor %r - expected tbc or retail" % sys.argv[2])
+        sys.exit("unknown flavor %r - expected tbc, retail or forever" % sys.argv[2])
 
     body = section(version, label)
     if not body:
