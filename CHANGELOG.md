@@ -3,6 +3,33 @@
 
 ---
 
+# StatCoach 1.1.24 (Forever)
+
+*20 September 2026*
+
+## A hit bar that uses the game's own numbers
+
+StatCoach now shows how much hit you have against how much Forever itself says is
+enough: 5% melee or ranged hit and 4% spell hit to never miss a target of your own
+level, and from five levels below the level cap the raid boss numbers, 8% and 17%.
+The numbers are read from the game's own hit tooltip, so they follow any change
+Blizzard makes. Hybrids get a melee and a spell bar, hunters a ranged one, and the
+bar turns green and says "capped" when you have enough.
+
+## What a low weapon skill costs you
+
+The weapon you are holding now shows what its missing skill points cost you: every
+point below the maximum is 0.04% crit with that weapon. The NOW line says it in a
+sentence, and tells you when there is nothing to fix.
+
+## Less noise
+
+Only the weapons in your hands get a bar, plus Defense. Casters see their wand and
+nothing else, and hunters see their bow first. Hit moved out of the number list and
+into its bar; the list keeps crit, haste, expertise, armor penetration and avoidance.
+
+---
+
 # StatCoach 1.1.23 (Forever)
 
 *18 September 2026*

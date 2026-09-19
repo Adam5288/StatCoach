@@ -2,7 +2,7 @@
 ## Title: StatCoach
 ## Notes: Weapon skill, Defense and your live combat numbers for World of Warcraft: Forever
 ## Author: Adam
-## Version: 1.1.23
+## Version: 1.1.24
 ## SavedVariables: StatCoachDB
 ## IconTexture: Interface\Icons\INV_Misc_Book_11
 ## X-Category: Combat
