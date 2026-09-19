@@ -475,7 +475,7 @@ end
 -- UI
 ------------------------------------------------------------------------
 local UI = {}
-local PRIO_MAX, BAR_MAX = 8, 4   -- 4 bars: prot warrior/paladin (def + uncrush + hit + exp)
+local PRIO_MAX, BAR_MAX = 8, 6   -- classic needs 4 (def + uncrush + hit + exp); Forever up to 6 (2 hit + 3 weapons + defense)
 local PAD = 12
 
 ------------------------------------------------------------------------
@@ -2660,11 +2660,15 @@ local FOREVER_WEAPON_SKILL = {
 -- to it name 473 (Fist Weapons). Whichever of the two the character has wins.
 local FOREVER_UNARMED_ID, FOREVER_FIST_ID = 162, 473
 
--- Skill ids of what is in the main hand, off-hand and ranged slot, in that order.
+-- Skill ids of what the character is holding: main hand, off-hand, ranged slot -
+-- except for a hunter, whose bow or gun is the weapon that matters, so the ranged
+-- slot leads there (a level-1 hunter otherwise gets coached on the dagger).
 -- "have" is the set of skill ids the character actually owns.
 local function ForeverEquippedSkills(have)
   local ids, seen = {}, {}
-  for _, slot in ipairs({ 16, 17, 18 }) do
+  local _, class = UnitClass("player")
+  local order = (class == "HUNTER") and { 18, 16, 17 } or { 16, 17, 18 }
+  for _, slot in ipairs(order) do
     local id
     local itemID = GetInventoryItemID("player", slot)
     if itemID then
@@ -2716,6 +2720,41 @@ local function ForeverSkills()
   for _, line in ipairs(weapons) do line.equipped = equipped[line.id] or false end
   return weapons, defense
 end
+
+-- How much hit is enough. Forever's character sheet says it in words: the hit tooltip
+-- is built from CR_<CLASS>_HIT_CAP_TOOLTIP (warrior, hunter and rogue have their own,
+-- everyone else gets CR_DEFAULT_HIT_CAP_TOOLTIP), e.g. "To never miss Raid Bosses:
+-- 8.00% Melee, 17.00% Spells, 27.00% Dual Wielding / To never miss Lvl %d Targets:
+-- 5.00% Melee, 4.00% Spells, 24.00% Dual Wielding". The numbers are READ from that
+-- text, by position rather than by word, so they follow the client's language and
+-- any rebalancing Blizzard does. The constants are what the beta said on 20 Sep 2026
+-- and are only the fallback for a text that no longer has the shape above.
+local function ForeverCaps()
+  local caps = { boss = { melee = 8, spell = 17, dual = 27 }, level = { melee = 5, spell = 4, dual = 24 }, fromGame = false }
+  local _, class = UnitClass("player")
+  local text = (class and rawget(_G, "CR_" .. class .. "_HIT_CAP_TOOLTIP")) or rawget(_G, "CR_DEFAULT_HIT_CAP_TOOLTIP")
+  if type(text) ~= "string" then return caps end
+  local n = {}
+  for whole, frac in text:gmatch("(%d+)[%.,](%d+)%%") do
+    local v = tonumber(whole .. "." .. frac)
+    if v and v > 0 and v < 100 then n[#n + 1] = v end
+  end
+  if #n == 6 then
+    caps.boss  = { melee = n[1], spell = n[2], dual = n[3] }
+    caps.level = { melee = n[4], spell = n[5], dual = n[6] }
+    caps.fromGame = true
+  elseif #n == 4 then
+    caps.boss  = { melee = n[1], spell = n[2] }
+    caps.level = { melee = n[3], spell = n[4] }
+    caps.fromGame = true
+  end
+  return caps
+end
+
+-- Measured on the beta on four classes (warrior, rogue, mage, paladin), melee and
+-- ranged: every point a weapon skill sits below its maximum costs 0.04% crit with
+-- that weapon. It is the same constant Blizzard's sheet uses for Defense.
+local FOREVER_CRIT_PER_SKILL = 0.04
 
 local function RefreshForever()
   if not UI.frame then return end
@@ -2769,10 +2808,9 @@ local function RefreshForever()
     end
     if any or always then lines[#lines + 1] = label .. "  " .. table.concat(out, " / ") end
   end
-  typed("Hit",
-    sum(safe(GetCombatRatingBonus, CR_HIT_MELEE),  safe(GetHitModifier)),
-    sum(safe(GetCombatRatingBonus, CR_HIT_RANGED), safe(GetRangedHitModifier)),
-    sum(safe(GetCombatRatingBonus, CR_HIT_SPELL),  safe(GetSpellHitModifier)), true)
+  local hitMelee  = sum(safe(GetCombatRatingBonus, CR_HIT_MELEE),  safe(GetHitModifier))
+  local hitRanged = sum(safe(GetCombatRatingBonus, CR_HIT_RANGED), safe(GetRangedHitModifier))
+  local hitSpell  = sum(safe(GetCombatRatingBonus, CR_HIT_SPELL),  safe(GetSpellHitModifier))
   typed("Crit", desecret(safe(GetCritChance)), desecret(safe(GetRangedCritChance)),
     desecret(safe(GetSpellCritChance)), true)
   local rangedHaste, ammoHaste = safe(GetRangedHaste)
@@ -2808,64 +2846,147 @@ local function RefreshForever()
     else t:SetText(""); t:Hide() end
   end
 
-  -- Bars: up to three weapon skills (equipped first), then Defense. Full = the
-  -- maximum the game reports for the skill right now.
+  -- HIT: one bar per attack type the class fights with, against what the game says
+  -- is enough. While leveling that is a target of your own level; from five levels
+  -- below the level cap it is a raid boss, because that is the number gear is then
+  -- chosen by. A value the client withholds in combat simply drops its bar.
+  local caps = ForeverCaps()
+  local maxLevel = safe(GetMaxPlayerLevel) or 60
+  local vsBoss = level >= maxLevel - 5
+  local target = vsBoss and caps.boss or caps.level
+  local versus = vsBoss and "raid bosses" or ("level " .. level)                 -- on the bar label
+  local aTarget = vsBoss and "a raid boss" or ("a level " .. level .. " target")   -- in a sentence
+  local hitRows = {}
+  local function hitRow(label, cur, cap)
+    if cur and cap then hitRows[#hitRows + 1] = { label = label .. " vs " .. versus, cur = cur, cap = cap } end
+  end
+  if SPELL_ONLY[class] then hitRow("Spell hit", hitSpell, target.spell)
+  elseif class == "HUNTER" then hitRow("Ranged hit", hitRanged, target.melee)
+  elseif HYBRID[class] then hitRow("Melee hit", hitMelee, target.melee); hitRow("Spell hit", hitSpell, target.spell)
+  else hitRow("Melee hit", hitMelee, target.melee) end
+
+  -- WEAPON SKILL & DEFENSE: only what is in your hands, then Defense. A skill for a
+  -- weapon you are not holding is noise, so it gets no bar. A pure caster never
+  -- swings its staff and is not hit for its Defense: the only line it gets is the
+  -- wand it actually fires.
   local weapons, defense = ForeverSkills()
-  local show = {}
-  for i = 1, math.min(#weapons, defense and BAR_MAX - 1 or BAR_MAX) do show[#show + 1] = weapons[i] end
-  if defense then show[#show + 1] = defense end
+  local skillRows = {}
+  for _, sk in ipairs(weapons) do
+    if sk.equipped and (not SPELL_ONLY[class] or sk.id == 228) and #skillRows < BAR_MAX - #hitRows - 1 then
+      skillRows[#skillRows + 1] = sk
+    end
+  end
+  if defense and not SPELL_ONLY[class] then skillRows[#skillRows + 1] = defense end
+  local function critCost(sk)
+    if SPELL_ONLY[class] or sk.id == FOREVER_DEFENSE_ID or sk.rank >= sk.max then return 0 end
+    return (sk.max - sk.rank) * FOREVER_CRIT_PER_SKILL
+  end
+  -- Two decimals under 1%: at low level 0.16% and 0.24% are different answers, and
+  -- one decimal would print both as 0.2%.
+  local function costText(cost)
+    return string.format(cost < 1 and "%.2f%%" or "%.1f%%", cost)
+  end
+
+  if not UI.fvHitHeader then
+    local h = UI.frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    h:SetJustifyH("LEFT"); h:SetWordWrap(false)
+    UI.fvHitHeader = h
+  end
+  UI.fvHitHeader:SetText("|cffffd100HIT|r  |cff888888(what the game says is enough)|r")
+  if #hitRows > 0 then UI.fvHitHeader:Show() else UI.fvHitHeader:Hide() end
   UI.capHeader:SetText("|cffffd100WEAPON SKILL & DEFENSE|r  |cff888888(rank / max)|r")
-  UI.capHeader:Show()
+  if #skillRows > 0 then UI.capHeader:Show() else UI.capHeader:Hide() end
+
   for i = 1, BAR_MAX do
-    local b, s = UI.bars[i], show[i]
-    if s then
-      b.label:SetText(s.equipped and (s.name .. "  |cff888888equipped|r") or s.name)
-      b.bar.markFrac = nil
-      b.bar.mark:Hide()
-      b.bar:SetValue(math.min(1, s.rank / s.max))
-      if s.rank >= s.max then b.bar:SetStatusBarColor(0.2, 0.7, 0.2)   -- capped: green
-      else b.bar:SetStatusBarColor(0.85, 0.65, 0.1) end                -- room to grow: gold
-      local txt = string.format("%d / %d", s.rank, s.max)
-      if s.bonus > 0 then txt = txt .. string.format("  |cff40ff40(+%d)|r", s.bonus) end
+    local b = UI.bars[i]
+    local h, sk = hitRows[i], skillRows[i - #hitRows]
+    b.bar.markFrac = nil
+    b.bar.mark:Hide()
+    if h then
+      local done = h.cur >= h.cap
+      b.label:SetText(h.label)
+      b.bar:SetValue(math.min(1, h.cur / h.cap))
+      if done then b.bar:SetStatusBarColor(0.2, 0.7, 0.2) else b.bar:SetStatusBarColor(0.3, 0.55, 0.9) end
+      b.val:SetText(fmt(h.cur) .. "% / " .. fmt(h.cap) .. "%" .. (done and "  |cff40ff40capped|r" or ""))
+      b:Show()
+    elseif sk then
+      b.label:SetText(sk.name)
+      b.bar:SetValue(math.min(1, sk.rank / sk.max))
+      if sk.rank >= sk.max then b.bar:SetStatusBarColor(0.2, 0.7, 0.2)   -- at its maximum: green
+      else b.bar:SetStatusBarColor(0.85, 0.65, 0.1) end                  -- room to grow: gold
+      local txt = string.format("%d / %d", sk.rank, sk.max)
+      if sk.bonus > 0 then txt = txt .. string.format("  |cff40ff40(+%d)|r", sk.bonus) end
+      local cost = sk.equipped and critCost(sk) or 0
+      if cost > 0 then txt = txt .. "  |cffff9040-" .. costText(cost) .. " crit|r" end
       b.val:SetText(txt)
       b:Show()
     else b:Hide() end
   end
 
+  -- NOW: the one thing worth acting on. A weapon skill that is behind is the only
+  -- thing a leveling character can fix on the spot, so it goes first; hit is only
+  -- worth a sentence once there is some on the gear or the boss number applies.
   local top = weapons[1]
+  local mainHit = hitRows[1]
   local now
-  if top and top.rank < top.max then
-    now = string.format("%s is %d of %d. Higher weapon skill increases your chance to hit, " ..
-      "and it only rises while you fight with that weapon.", top.name, top.rank, top.max)
-  elseif top then
-    now = top.name .. " is at its maximum for now."
+  local topCost = (top and top.equipped) and critCost(top) or 0
+  if topCost > 0 then
+    now = string.format("%s is %d of %d - that is costing you %s crit with it. It only rises while you " ..
+      "fight with that weapon.", top.name, top.rank, top.max, costText(topCost))
+  elseif mainHit and mainHit.cur < mainHit.cap and (vsBoss or mainHit.cur > 0) then
+    now = string.format("You have %.1f%% of the %.1f%% hit it takes to never miss %s - %.1f%% to go.",
+      mainHit.cur, mainHit.cap, aTarget, mainHit.cap - mainHit.cur)
+  elseif mainHit and mainHit.cur >= mainHit.cap then
+    now = "You never miss " .. aTarget .. " any more. More hit does nothing - put the budget elsewhere."
+  elseif top and not SPELL_ONLY[class] then
+    now = top.name .. " is at its maximum. Nothing to fix right now."
   else
-    now = "No weapon skills to read yet."
+    now = "Nothing to fix right now."
   end
   UI.nowLine:SetText("|cffffd100NOW:|r |cffffffff" .. now .. "|r")
   UI.nowLine:Show()
 
+  local defCap = 440
+  local defText = rawget(_G, "DEFAULT_STATDEFENSE_TOOLTIP")
+  if type(defText) == "string" then defCap = tonumber(defText:match("(%d%d%d)")) or defCap end
   UI.infoParts = {
-    "This is StatCoach on World of Warcraft: Forever. It shows what the game itself reports: " ..
-    "hit, crit, haste and avoidance worked out the way the character sheet does it, and your " ..
-    "weapon skills and Defense against their current maximum.",
-    "Stat priorities and upgrade verdicts are switched off here on purpose. Forever's talents and " ..
-    "items are new, and a priority list copied from Classic would be a guess. They come back once " ..
-    "there is real data to build them on.",
+    "StatCoach on World of Warcraft: Forever coaches from what the game itself states - nothing here is " ..
+    "carried over from Classic by assumption.",
+    string.format("HIT. Forever's own hit tooltip says that to never miss a target of your level you need " ..
+      "%s%% melee or ranged hit and %s%% spell hit, and against raid bosses %s%% and %s%%.%s The bar " ..
+      "switches to the raid boss number five levels below the level cap.",
+      fmt(caps.level.melee), fmt(caps.level.spell), fmt(caps.boss.melee), fmt(caps.boss.spell),
+      caps.level.dual and string.format(" While dual wielding it lists %s%% and %s%% instead.",
+        fmt(caps.level.dual), fmt(caps.boss.dual)) or ""),
+    "WEAPON SKILL. Every point a weapon skill sits below its maximum costs 0.04% crit with that weapon " ..
+    "(measured on the beta), and the game's own text says it lowers your chance to hit as well. The " ..
+    "maximum is five per character level.",
+    string.format("DEFENSE. The game's Defense tooltip says %d Defense makes you immune to critical strikes " ..
+      "from raid bosses. Crushing blows come from enemies three or more levels above you.", defCap),
+    "Stat priorities and upgrade verdicts are still switched off on Forever: the published guides do not " ..
+    "agree yet, and a copied list would be a guess. They come back on real data.",
   }
   if UI.notesPopup and UI.notesPopup:IsShown() then RefreshNotes("Forever") end
 
+  -- Layout: what you can act on first (NOW, hit, weapon skill), your raw numbers last
   local y = -34
   PlaceRow(UI.info, y); y = y - math.max(UI.info:GetStringHeight() + 4, 18)
   PlaceRow(UI.nowLine, y); y = y - (UI.nowLine:GetStringHeight() + 8)
+  if #hitRows > 0 then
+    PlaceRow(UI.fvHitHeader, y); y = y - math.max(UI.fvHitHeader:GetStringHeight() + 5, 18)
+    for i = 1, #hitRows do PlaceRow(UI.bars[i], y); y = y - 34 end
+    y = y - 2
+  end
+  if #skillRows > 0 then
+    PlaceRow(UI.capHeader, y); y = y - math.max(UI.capHeader:GetStringHeight() + 5, 18)
+    for i = #hitRows + 1, BAR_MAX do
+      if UI.bars[i]:IsShown() then PlaceRow(UI.bars[i], y); y = y - 34 end
+    end
+    y = y - 2
+  end
   PlaceRow(UI.prioHeader, y); y = y - math.max(UI.prioHeader:GetStringHeight() + 4, 16)
   for i = 1, PRIO_MAX do
     if UI.prio[i]:IsShown() then PlaceRow(UI.prio[i], y); y = y - 15 end
-  end
-  y = y - 6
-  PlaceRow(UI.capHeader, y); y = y - math.max(UI.capHeader:GetStringHeight() + 5, 18)
-  for i = 1, BAR_MAX do
-    if UI.bars[i]:IsShown() then PlaceRow(UI.bars[i], y); y = y - 34 end
   end
   UI.frame:SetHeight(math.max(-y + PAD, 300))
 end
@@ -4206,7 +4327,7 @@ ev:SetScript("OnEvent", function(_, event, arg1)
     -- Diagnostics are for reading once, not for living in the database. Both
     -- /stc stats and /stc globals write a snapshot; drop it at the next login so
     -- a debugging session cannot quietly leave 20 KB behind forever.
-    db.statCheck, db.globals = nil, nil
+    db.statCheck, db.globals, db.panelDump = nil, nil, nil
     db.locked = nil   -- window lock removed in 1.1.15; drop the leftover key
     db.point = db.point or "CENTER"; db.x = db.x or 0; db.y = db.y or 0
     if db.contextMode ~= "leveling" and db.contextMode ~= "preraid" and db.contextMode ~= "endgame" then
@@ -4249,11 +4370,59 @@ function StatCoach_EnchantFor(slot)
   return nil
 end
 
+-- /stc dump: write what the panel shows RIGHT NOW into SavedVariables - every line,
+-- every bar with its text, fill and colour, and where each one sits - so wording and
+-- layout can be read off disk after a /reload and held against the numbers the game
+-- reports, instead of from a screenshot. Works on every flavor; shows nothing.
+local function DumpPanel()
+  if not UI.frame then return end
+  Refresh()
+  local function text(fs)
+    if fs and fs.GetText and fs:IsShown() then return fs:GetText() end
+    return nil
+  end
+  local function box(o)   -- where it sits, to catch text running into text
+    if not (o and o.GetTop and o:GetTop()) then return nil end
+    return { top = math.floor(o:GetTop() + 0.5), bottom = math.floor(o:GetBottom() + 0.5),
+             left = math.floor(o:GetLeft() + 0.5), right = math.floor(o:GetRight() + 0.5) }
+  end
+  local _, class = UnitClass("player")
+  local d = {
+    when = date("%Y-%m-%d %H:%M:%S"),
+    flavor = FOREVER and "forever" or (RETAIL and "retail" or "classic"),
+    class = class, level = UnitLevel("player"),
+    frame = box(UI.frame), frameShown = UI.frame:IsShown() and true or false,
+    info = text(UI.info), now = text(UI.nowLine), nowBox = box(UI.nowLine),
+    hitHeader = text(UI.fvHitHeader), capHeader = text(UI.capHeader), prioHeader = text(UI.prioHeader),
+    lines = {}, bars = {},
+  }
+  for i = 1, PRIO_MAX do
+    local t = text(UI.prio[i])
+    if t then d.lines[#d.lines + 1] = { text = t, box = box(UI.prio[i]) } end
+  end
+  for i = 1, BAR_MAX do
+    local b = UI.bars[i]
+    if b and b:IsShown() then
+      local r, g, bl = b.bar:GetStatusBarColor()
+      d.bars[#d.bars + 1] = {
+        label = b.label:GetText(), value = b.val:GetText(), fill = b.bar:GetValue(),
+        color = string.format("%.2f,%.2f,%.2f", r or 0, g or 0, bl or 0),
+        labelCut = (b.label.IsTruncated and b.label:IsTruncated()) and true or false,
+        box = box(b),
+      }
+    end
+  end
+  StatCoachDB.panelDump = d
+  print("|cffffd100StatCoach|r: panel written (" .. #d.bars .. " bars, " .. #d.lines .. " lines) - /reload saves it to disk.")
+end
+
 SLASH_STATCOACH1 = "/statcoach"
 SLASH_STATCOACH2 = "/stc"
 SlashCmdList["STATCOACH"] = function(msg)
   msg = (msg or ""):lower():gsub("%s+", "")
-  if msg == "reset" then
+  if msg == "dump" then
+    DumpPanel()
+  elseif msg == "reset" then
     StatCoachDB.point, StatCoachDB.x, StatCoachDB.y = "CENTER", 0, 0
     if UI.frame then UI.frame:ClearAllPoints(); UI.frame:SetPoint("CENTER") end
     print("|cffffd100StatCoach|r: position reset.")
