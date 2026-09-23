@@ -4386,12 +4386,19 @@ local function DumpPanel()
     return { top = math.floor(o:GetTop() + 0.5), bottom = math.floor(o:GetBottom() + 0.5),
              left = math.floor(o:GetLeft() + 0.5), right = math.floor(o:GetRight() + 0.5) }
   end
+  local function sec(v) return (issecretvalue and issecretvalue(v)) and true or false end
   local _, class = UnitClass("player")
   local d = {
     when = date("%Y-%m-%d %H:%M:%S"),
     flavor = FOREVER and "forever" or (RETAIL and "retail" or "classic"),
     class = class, level = UnitLevel("player"),
     frame = box(UI.frame), frameShown = UI.frame:IsShown() and true or false,
+    inCombat = UnitAffectingCombat("player") and true or false,
+    secret = {   -- which sheet inputs the game hides from addons right now (true = secret)
+      hitRating = sec(safe(GetCombatRatingBonus, CR_HIT_MELEE)), meleeHit = sec(safe(GetHitModifier)),
+      rangedHit = sec(safe(GetRangedHitModifier)), spellHit = sec(safe(GetSpellHitModifier)),
+      crit = sec(safe(GetCritChance)), rangedCrit = sec(safe(GetRangedCritChance)), spellCrit = sec(safe(GetSpellCritChance)),
+    },
     info = text(UI.info), now = text(UI.nowLine), nowBox = box(UI.nowLine),
     hitHeader = text(UI.fvHitHeader), capHeader = text(UI.capHeader), prioHeader = text(UI.prioHeader),
     lines = {}, bars = {},
