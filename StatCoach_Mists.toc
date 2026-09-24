@@ -4,7 +4,7 @@
 ## Author: Adam
 ## Version: 1.1.25
 ## SavedVariables: StatCoachDB
-## IconTexture: Interface\Icons\INV_Misc_Book_11
+## IconTexture: Interface\AddOns\StatCoach\Media\logo
 ## X-Category: Combat
 
 # Minimap button via LibDBIcon (LibStub -> CallbackHandler -> LDB -> DBIcon order matters)
