@@ -23,7 +23,7 @@ CHANGELOG = os.path.join(HERE, "CHANGELOG.md")
 OUT = os.path.join(HERE, "RELEASE_NOTES.md")
 
 FLAVOR_LABEL = {"tbc": "TBC", "bcc": "TBC", "retail": "Retail", "mainline": "Retail",
-                "forever": "Forever"}
+                "forever": "Forever", "mists": "Mists"}
 
 
 def section(version, label):
@@ -44,7 +44,7 @@ def section(version, label):
 
 def main():
     if len(sys.argv) != 3:
-        sys.exit("usage: release_notes.py <version> <tbc|retail|forever>")
+        sys.exit("usage: release_notes.py <version> <tbc|retail|forever|mists>")
     version = sys.argv[1].lstrip("vV")
     flavor = sys.argv[2].lower()
     label = FLAVOR_LABEL.get(flavor)

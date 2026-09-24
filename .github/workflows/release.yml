@@ -28,7 +28,7 @@ on:
         description: "Which client this release is for"
         required: true
         type: choice
-        options: [tbc, retail, forever]
+        options: [tbc, retail, forever, mists]
       publish:
         description: "Actually upload to CurseForge and Wago"
         required: true
@@ -67,7 +67,7 @@ jobs:
       - name: Reduce the tree to the ${{ inputs.flavor }} files
         run: |
           if [ "${{ inputs.flavor }}" = "tbc" ]; then
-            rm -f StatCoach_Mainline.toc StatCoach_Forever.toc StatCoachData_Retail.lua
+            rm -f StatCoach_Mainline.toc StatCoach_Forever.toc StatCoach_Mists.toc StatCoachData_Retail.lua StatCoachData_Mists.lua
             echo "GAME=bcc" >> "$GITHUB_ENV"; echo "LABEL=TBC" >> "$GITHUB_ENV"
             echo "TBC package: StatCoach.toc + StatCoachData.lua"
           elif [ "${{ inputs.flavor }}" = "forever" ]; then
@@ -77,12 +77,18 @@ jobs:
             # renamed before launch. So the Forever package carries ONE plain TOC,
             # which needs no suffix to stay valid - and the packager refuses a
             # _Mainline TOC that lists a Forever interface number.
-            rm -f StatCoach.toc StatCoach_Mainline.toc
+            rm -f StatCoach.toc StatCoach_Mainline.toc StatCoach_Mists.toc StatCoachData_Mists.lua
             mv StatCoach_Forever.toc StatCoach.toc
             echo "GAME=forever" >> "$GITHUB_ENV"; echo "LABEL=Forever" >> "$GITHUB_ENV"
             echo "Forever package: StatCoach.toc (interface 16001) + both data files"
+          elif [ "${{ inputs.flavor }}" = "mists" ]; then
+            # Mists of Pandaria Classic loads a _Mists TOC; it carries the TBC data
+            # file (plain tables the engine expects to exist) and its own roster.
+            rm -f StatCoach.toc StatCoach_Mainline.toc StatCoach_Forever.toc StatCoachData_Retail.lua
+            echo "GAME=mists" >> "$GITHUB_ENV"; echo "LABEL=Mists" >> "$GITHUB_ENV"
+            echo "Mists package: StatCoach_Mists.toc + StatCoachData.lua + StatCoachData_Mists.lua"
           else
-            rm -f StatCoach.toc StatCoach_Forever.toc
+            rm -f StatCoach.toc StatCoach_Forever.toc StatCoach_Mists.toc StatCoachData_Mists.lua
             echo "GAME=retail" >> "$GITHUB_ENV"; echo "LABEL=Retail" >> "$GITHUB_ENV"
             echo "Retail package: StatCoach_Mainline.toc + both data files"
           fi

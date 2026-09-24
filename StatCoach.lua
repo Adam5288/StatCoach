@@ -27,6 +27,12 @@ local RETAIL = (WOW_PROJECT_ID ~= nil and WOW_PROJECT_MAINLINE ~= nil
 -- and defense, no Mastery or Versatility. The interface number tells them apart.
 local FOREVER = RETAIL and (select(4, GetBuildInfo()) or 0) < 20000
 
+-- Mists of Pandaria Classic (5.5.x) has a project id of its own, so RETAIL is false
+-- there - but it is not TBC either: specializations like retail, hit and expertise
+-- caps like TBC. The interface number is what tells it apart from the TBC client.
+local MISTS = not RETAIL and (select(4, GetBuildInfo()) or 0) >= 50000
+                         and (select(4, GetBuildInfo()) or 0) < 60000
+
 -- The item and spec functions live in namespaces now. The old globals are already
 -- gone on the newest Mainline-family client, while C_Item and C_SpecializationInfo
 -- exist on every client this file runs on. Namespace first, global as the fallback.
@@ -53,8 +59,13 @@ end
 -- GetSpecializationInfo answers in the client's language, so on a non-English
 -- client every spec lookup missed and the panel showed no data. The id does not
 -- change with locale. Falls back to the name for an id we do not know yet.
+-- Retail and Mists both pick a specialization; each has its own roster file.
+-- (a field, not a local: this file sits at Lua's 200-local limit for one chunk)
+ns.SpecData = function() return (MISTS and D and D.mists) or (D and D.retail) end
+
 local function RetailSpecKey(id, name)
-  local map = D and D.retail and D.retail.SPECID
+  local sdat = ns.SpecData()
+  local map = sdat and sdat.SPECID
   return (id and map and map[id]) or name
 end
 
@@ -1236,6 +1247,7 @@ end
 
 local function evalItem(link)
   if FOREVER then return nil end   -- no verdicts without data: see the FOREVER path
+  if MISTS then return nil end     -- Mists: caps and priority first, item verdicts later
   if RETAIL then return retailEvalItem(link) end
   if not curCtx.role or type(GetItemInfoInstant) ~= "function" then return nil end
   local equipLoc = select(4, GetItemInfoInstant(link))   -- instant: works even uncached
@@ -1465,7 +1477,7 @@ end
 
 -- Which gem belongs in a socket of each colour, for the player's role right now.
 local function GemPicks(link)
-  if RETAIL then return nil end
+  if RETAIL or MISTS then return nil end
   local role = curCtx and curCtx.role
   local list = role and D.GEMS and D.GEMS[role]
   if not list then return nil end
@@ -1591,7 +1603,7 @@ end
 
 -- Retail removed the OnTooltipSetItem script (Dragonflight+); it uses the
 -- TooltipDataProcessor pipeline instead. Classic keeps the classic hook.
-if RETAIL and TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall then
+if (RETAIL or MISTS) and TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall then
   TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, function(tt)
     if tt ~= GameTooltip then return end
     local link
@@ -2179,10 +2191,14 @@ local function RefreshNotes(spec)
   p.title:SetText("|cffffd100Notes|r  |cff888888" .. (spec or "") .. "|r")
   local parts = UI.infoParts or {}
   local text = (#parts > 0) and table.concat(parts, "\n\n") or "No notes for this context."
-  -- Coach-series line (flavor-matched: TBC promotes TBC, retail promotes retail)
-  text = text .. "\n\n|cff888888Goes hand in hand with " ..
-    (RETAIL and "TrinketCoach - trinket tiers right on your tooltips."
-            or "GearCoach - BiS checklists and where to get them.") .. "|r"
+  -- Coach-series line (flavor-matched: TBC promotes TBC, retail promotes retail).
+  -- Forever and Mists get none: neither addon does anything on those clients.
+  local partner
+  if not (FOREVER or MISTS) then
+    partner = RETAIL and "TrinketCoach - trinket tiers right on your tooltips."
+      or "GearCoach - BiS checklists and where to get them."
+  end
+  if partner then text = text .. "\n\n|cff888888Goes hand in hand with " .. partner .. "|r" end
   p.body:SetText(text)
   p:SetHeight(p.body:GetStringHeight() + 48)
 end
@@ -2347,10 +2363,11 @@ local function RetailDetect()
       specName = RetailSpecKey(sid, name)
     end
   end
-  local rc = D.retail and D.retail.classes and D.retail.classes[class]
+  local roster = ns.SpecData()
+  local rc = roster and roster.classes and roster.classes[class]
   if not rc then
-    class = (D.retail and D.retail.classOrder and D.retail.classOrder[1]) or class
-    rc = D.retail and D.retail.classes and D.retail.classes[class]
+    class = (roster and roster.classOrder and roster.classOrder[1]) or class
+    rc = roster and roster.classes and roster.classes[class]
   end
   -- Manual mode must always land on a real spec: a spec name left over from
   -- another class falls back to the first spec of the class now selected.
@@ -2992,11 +3009,310 @@ local function RefreshForever()
 end
 
 ------------------------------------------------------------------------
+-- MISTS path (Mists of Pandaria Classic 5.5.x). Caps like TBC - hit and expertise
+-- against a raid boss - with specializations like retail. The cap numbers are the
+-- game's own. Blizzard's Mists character sheet (Blizzard_CharacterFrame: Cata/
+-- PaperDollFrame.lua + Mists/PaperDollFrameUtil.lua, build 5.5.4.69934) computes
+--   miss  = base miss - hit rating bonus - hit modifier
+--   dodge = base dodge - expertise
+--   parry = base parry - the expertise left over once dodge is gone
+-- with the base chance per level difference in PaperDollFrameUtil.Constants. That
+-- table is read when the client has it loaded; MISTS_BASE is a copy of the same
+-- numbers, so nothing here depends on the character sheet having been opened.
+-- Both are fields on UI rather than locals: this file sits at Lua's 200-local
+-- limit for one chunk.
+------------------------------------------------------------------------
+UI.MISTS_BASE = {
+  BaseMissChancePhysical = { [0] = 3.0, [1] = 4.5, [2] = 6.0, [3] = 7.5 },
+  BaseMissChanceSpell    = { [0] = 6.0, [1] = 9.0, [2] = 12.0, [3] = 15.0 },
+  BaseEnemyDodgeChance   = { [0] = 3.0, [1] = 4.5, [2] = 6.0, [3] = 7.5 },
+  BaseEnemyParryChance   = { [0] = 3.0, [1] = 4.5, [2] = 6.0, [3] = 7.5 },
+}
+
+UI.RefreshMists = function()
+  if not UI.frame then return end
+  local class, specName, sd = RetailDetect()
+  curCtx.role = nil
+  curCtx.weights = {}
+  curCtx.retailSd = false         -- no item verdicts on Mists yet
+  wipe(bagCache)
+  UI.gemBtn:Hide(); UI.enchBtn:Hide(); UI.ctxBtn:Hide(); UI.row2:Hide()
+  UI.radar:Hide()
+  UI.compareHeader:Hide(); UI.compareLine:Hide()
+  if UI.fvHitHeader then UI.fvHitHeader:Hide() end
+
+  local level = UnitLevel("player") or 1
+  local cc = (RAID_CLASS_COLORS and class and RAID_CLASS_COLORS[class]) or { r = 1, g = 1, b = 1 }
+  local hex = string.format("%02x%02x%02x", cc.r * 255, cc.g * 255, cc.b * 255)
+  UI.info:SetText(string.format("Lv %d  |cff%s%s|r  \226\128\162  %s",
+    level, hex, class or "?", specName or "no spec"))
+
+  -- Class / spec row, as on retail: AUTO follows the character, MANUAL browses.
+  local manual = StatCoachDB.manual
+  UI.row1:Show()
+  UI.classBtn:SetLabel(class or "?")
+  UI.specBtn:SetLabel(specName or "?")
+  UI.autoBtn:SetLabel(manual and "|cffffff00MANUAL|r" or "|cff40ff40AUTO|r")
+  UI.classBtn:SetAlpha(manual and 1 or 0.45)
+  UI.specBtn:SetAlpha(manual and 1 or 0.45)
+  UI.specBtn:SetPoint("LEFT", UI.classBtn, "RIGHT", 4, 0)
+  UI.autoBtn:ClearAllPoints()
+  UI.autoBtn:SetPoint("RIGHT", UI.autoBtn:GetParent(), "RIGHT", 0, 0)
+  local rowW = UI.autoBtn:GetParent():GetWidth() or 0
+  local maxSpec = rowW - UI.classBtn:GetWidth() - UI.autoBtn:GetWidth() - 12
+  if maxSpec > 40 and UI.specBtn:GetWidth() > maxSpec then
+    UI.specBtn:SetWidth(maxSpec)
+    UI.specBtn.text:SetWidth(maxSpec - 12)
+  end
+
+  local function base(key, offset)
+    local util = rawget(_G, "PaperDollFrameUtil")
+    local t = type(util) == "table" and type(util.Constants) == "table" and util.Constants[key]
+    return (type(t) == "table" and tonumber(t[offset])) or UI.MISTS_BASE[key][offset]
+  end
+  local function sum(a, b)
+    a, b = desecret(a), desecret(b)
+    if a == nil and b == nil then return nil end
+    return num(a) + num(b)
+  end
+  local maxLevel = safe(GetMaxPlayerLevel) or 90
+  local vsBoss = level >= maxLevel - 5
+  local off = vsBoss and 3 or 0
+  local versus = vsBoss and "a raid boss" or ("level " .. level)
+
+  -- What the spec attacks with decides which caps it has: melee and ranged need hit
+  -- and expertise, casters spell hit, healers nothing. A tank faces the boss, so
+  -- parry counts for it; a damage dealer stands behind, where nothing is parried.
+  local attack = sd and sd.attack
+  local tank = sd and sd.role == "TANK"
+  local reads = attack or ((sd and sd.primary == "Intellect") and "spell") or "melee"
+  local hitCR = (attack == "ranged" and CR_HIT_RANGED) or (attack == "spell" and CR_HIT_SPELL) or CR_HIT_MELEE
+  local e1, _, e3 = safe(rawget(_G, "GetExpertisePercent") or GetExpertise)
+  local exp = desecret(reads == "ranged" and e3 or e1)
+  local hit
+  if reads == "spell" then hit = sum(safe(GetCombatRatingBonus, CR_HIT_SPELL), safe(GetSpellHitModifier))
+  else hit = sum(safe(GetCombatRatingBonus, hitCR), safe(GetHitModifier)) end
+  -- A caster's expertise counts toward spell hit in combat, but the character sheet
+  -- leaves it out of the spell hit it shows. Players measured it on Mists Classic
+  -- (Blizzard forums, "Expertise doesn't increase spell hit for casters") and every
+  -- caster guide caps hit and expertise together at 15%. So it is added here.
+  if attack == "spell" and hit and exp then hit = hit + exp end
+
+  -- Rating per 1%: the character's own ratio whenever there is rating to read it
+  -- from, else the level-cap number the data file carries (it is stated in the guides).
+  local function perPct(cr)
+    local r, b = desecret(safe(GetCombatRating, cr)), desecret(safe(GetCombatRatingBonus, cr))
+    if r and b and r > 0 and b > 0 then return r / b end
+    local roster = ns.SpecData()
+    if level >= maxLevel and roster and roster.RATING_PER_PCT then return roster.RATING_PER_PCT end
+    return nil
+  end
+  local function ratingOf(pct, cr)
+    local p = perPct(cr)
+    return p and math.floor(pct * p + 0.5) or nil
+  end
+
+  local rows = {}
+  if attack and hit then
+    rows[#rows + 1] = { kind = "hit", cr = hitCR, cur = hit,
+      label = (attack == "spell" and "Spell hit") or (attack == "ranged" and "Ranged hit") or "Hit",
+      cap = base(attack == "spell" and "BaseMissChanceSpell" or "BaseMissChancePhysical", off) }
+  end
+  if attack and attack ~= "spell" and exp then
+    local dodge = base("BaseEnemyDodgeChance", off)
+    rows[#rows + 1] = { kind = "dodge", cr = CR_EXPERTISE, cur = exp, cap = dodge,
+      label = tank and "Expertise - dodge" or "Expertise" }
+    if tank then
+      rows[#rows + 1] = { kind = "parry", cr = CR_EXPERTISE, cur = math.max(0, exp - dodge),
+        cap = base("BaseEnemyParryChance", off), label = "Expertise - parry" }
+    end
+  end
+
+  UI.capHeader:SetText("|cffffd100" .. (attack == "spell" and "SPELL HIT" or "HIT & EXPERTISE") ..
+    "|r  |cff888888(vs " .. versus .. ")|r")
+  if #rows > 0 then UI.capHeader:Show() else UI.capHeader:Hide() end
+  for i = 1, BAR_MAX do
+    local b, r = UI.bars[i], rows[i]
+    b.bar.markFrac = nil
+    b.bar.mark:Hide()
+    if r then
+      local done = r.cur >= r.cap - 0.005
+      b.label:SetText(r.label)
+      b.bar:SetValue(r.cap > 0 and math.min(1, r.cur / r.cap) or 1)
+      if done then b.bar:SetStatusBarColor(0.2, 0.7, 0.2) else b.bar:SetStatusBarColor(0.3, 0.55, 0.9) end
+      b.val:SetText(string.format("%.2f%% / %.2f%%", r.cur, r.cap) .. (done and "  |cff40ff40capped|r" or ""))
+      b:Show()
+    else b:Hide() end
+  end
+
+  -- The stat list, each with the character's own number next to it.
+  local list = (sd and sd.stats) or {}
+  local function p2(v) v = desecret(v); return v and string.format("%.2f%%", v) or nil end
+  local function big(v)
+    v = desecret(v)
+    if not v then return nil end
+    v = math.floor(v + 0.5)
+    return (type(BreakUpLargeNumbers) == "function" and BreakUpLargeNumbers(v)) or tostring(v)
+  end
+  local function unitStat(i) local _, eff = safe(UnitStat, "player", i); return eff end
+  local function lowestSchool(fn)
+    local m
+    for school = 2, 7 do
+      local v = desecret(safe(fn, school))
+      if v and (not m or v < m) then m = v end
+    end
+    return m
+  end
+  local VALUE = {
+    Strength  = function() return big(unitStat(1)) end,
+    Agility   = function() return big(unitStat(2)) end,
+    Stamina   = function() return big(unitStat(3)) end,
+    Intellect = function() return big(unitStat(4)) end,
+    Spirit    = function() return big(unitStat(5)) end,
+    Hit       = function() return hit and p2(hit) end,
+    Expertise = function() return exp and p2(exp) end,
+    Mastery   = function() return p2((safe(GetMasteryEffect))) end,
+    Crit      = function()
+      if reads == "spell" then return p2(lowestSchool(GetSpellCritChance)) end
+      return p2(safe(reads == "ranged" and GetRangedCritChance or GetCritChance))
+    end,
+    Haste     = function()
+      if reads == "spell" then return p2(safe(UnitSpellHaste, "player")) end
+      return p2(safe(reads == "ranged" and GetRangedHaste or GetMeleeHaste))
+    end,
+    ["Spell Power"] = function()
+      if sd and sd.role == "HEALER" then return big(safe(GetSpellBonusHealing)) end
+      return big(lowestSchool(GetSpellBonusDamage))
+    end,
+    ["Attack Power"] = function()
+      local b, p, n = safe(reads == "ranged" and UnitRangedAttackPower or UnitAttackPower, "player")
+      if b == nil then return nil end
+      return big(num(desecret(b)) + num(desecret(p)) + num(desecret(n)))
+    end,
+    Armor = function() local _, eff = safe(UnitArmor, "player"); return big(eff) end,
+    Dodge = function() return p2(safe(GetDodgeChance)) end,
+    Parry = function() return p2(safe(GetParryChance)) end,
+  }
+  UI.prioHeader:SetText("|cffffd100PRIORITY|r")
+  for i = 1, PRIO_MAX do
+    local t, st = UI.prio[i], list[i]
+    if st then
+      local v = VALUE[st] and VALUE[st]()
+      t:SetText("|cffaaaaaa" .. i .. ".|r  " .. st .. (v and ("  |cffffffff" .. v .. "|r") or ""))
+      t:Show()
+    else t:SetText(""); t:Hide() end
+  end
+
+  -- NOW: the one thing to do. Missing a cap first; rating past a cap next, since
+  -- that rating can be reforged into something that works; else the next stat.
+  local RATED = { Crit = true, Haste = true, Mastery = true, Spirit = true, Dodge = true, Parry = true }
+  -- Where Spirit turns into hit for the spec, reforging it "into Hit" moves nothing.
+  if sd and sd.spiritIsHit and attack then RATED.Spirit = nil end
+  local function lowestRated()   -- where reforged rating comes from
+    for i = #list, 1, -1 do if RATED[list[i]] then return list[i] end end
+  end
+  local function bestRated()     -- where surplus rating should go
+    for _, st in ipairs(list) do if RATED[st] then return st end end
+  end
+  local now
+  local short
+  for _, r in ipairs(rows) do if r.cur < r.cap - 0.005 then short = r; break end end
+  if not sd then
+    now = "Pick a specialization to get advice."
+  elseif not attack then
+    now = string.format("Healers have no hit or expertise cap. Your best secondary stat is %s.",
+      bestRated() or "Spirit")
+  elseif not vsBoss then
+    now = string.format("While leveling, %s and item level carry you. Hit and expertise start to " ..
+      "matter at level %d, against raid bosses.", sd.primary or "your main stat", maxLevel - 5)
+  elseif short then
+    local left = short.cap - short.cur
+    local src = lowestRated()
+    local what = (short.kind == "hit") and "hit" or "expertise"
+    local lead = (short.kind == "hit" and "You miss a raid boss %.2f%% of the time.")
+      or (short.kind == "dodge" and "A raid boss dodges %.2f%% of your attacks.")
+      or "A raid boss still parries %.2f%% of your attacks from the front."
+    local need = ratingOf(left, short.cr)
+    now = string.format(lead, left) ..
+      (need and string.format(" About %d %s rating to go.", need, what) or "") ..
+      (src and (" Reforge " .. src .. " into " .. (what == "hit" and "Hit" or "Expertise") .. ".") or "")
+  else
+    local over
+    for _, r in ipairs(rows) do
+      local last = r.kind == "hit" or r.kind == "parry" or (r.kind == "dodge" and not tank)
+      if last and r.cur - r.cap > 0.5 then over = r; break end
+    end
+    local best = bestRated() or "your next stat"
+    if over then
+      local extra = over.cur - over.cap
+      local spare = ratingOf(extra, over.cr)
+      now = string.format("You have %.2f%% more %s than a raid boss needs%s. Reforge it into %s.",
+        extra, over.kind == "hit" and "hit" or "expertise",
+        spare and string.format(" - about %d rating", spare) or "", best)
+    else
+      now = string.format("%s capped. Your next best stat is %s.",
+        attack == "spell" and "Spell hit is" or "Hit and expertise are", best)
+    end
+  end
+  UI.nowLine:SetText("|cffffd100NOW:|r |cffffffff" .. now .. "|r")
+  UI.nowLine:Show()
+
+  -- Notes behind the "i" icon
+  local dw = tonumber(rawget(_G, "DUAL_WIELD_HIT_PENALTY")) or 19
+  UI.infoParts = {}
+  if sd and sd.notes then UI.infoParts[#UI.infoParts + 1] = sd.notes end
+  if sd and sd.capNote then UI.infoParts[#UI.infoParts + 1] = sd.capNote end
+  -- Only the notes that fit the role: a mage has no use for dual wielding or parry,
+  -- a healer for any of it.
+  if attack == "spell" then
+    UI.infoParts[#UI.infoParts + 1] = string.format("SPELL HIT. The game's own character sheet starts " ..
+      "a raid boss at %.1f%% spell miss and takes your hit off that. Your expertise counts toward it " ..
+      "too - hit and expertise together fill the %.1f%% - but the sheet leaves expertise out of the " ..
+      "spell hit it shows. StatCoach adds it in, so the bar can read higher than the sheet.",
+      base("BaseMissChanceSpell", 3), base("BaseMissChanceSpell", 3))
+  elseif attack then
+    UI.infoParts[#UI.infoParts + 1] = string.format("HIT. The game's own character sheet starts a raid " ..
+      "boss at %.1f%% miss and takes your hit off that. Dual wielding adds %d%% to white swings only - " ..
+      "special attacks use the %.1f%%, and that is the number the bar shows.",
+      base("BaseMissChancePhysical", 3), dw, base("BaseMissChancePhysical", 3))
+    UI.infoParts[#UI.infoParts + 1] = string.format("EXPERTISE. Expertise takes away a raid boss's " ..
+      "%.1f%% dodge first, and only then its %.1f%% parry. A boss cannot parry what hits it from behind, " ..
+      "so a damage dealer stops at %.1f%%; a tank faces it and needs %.1f%%.",
+      base("BaseEnemyDodgeChance", 3), base("BaseEnemyParryChance", 3), base("BaseEnemyDodgeChance", 3),
+      base("BaseEnemyDodgeChance", 3) + base("BaseEnemyParryChance", 3))
+  end
+  if attack then
+    UI.infoParts[#UI.infoParts + 1] = "REFORGE. A reforger moves part of one secondary stat on an item " ..
+      "into another the item does not already have. Take it from the lowest stat on your list, and put it " ..
+      "into hit or expertise until they are capped."
+  end
+  if sd and sd.source then UI.infoParts[#UI.infoParts + 1] = sd.source end
+  if UI.notesPopup and UI.notesPopup:IsShown() then RefreshNotes(specName) end
+
+  -- Layout: NOW, then the caps you can act on, then the list
+  local y = -34
+  PlaceRow(UI.info, y); y = y - math.max(UI.info:GetStringHeight() + 4, 18)
+  PlaceRow(UI.row1, y); y = y - 24
+  PlaceRow(UI.nowLine, y); y = y - (UI.nowLine:GetStringHeight() + 8)
+  if #rows > 0 then
+    PlaceRow(UI.capHeader, y); y = y - math.max(UI.capHeader:GetStringHeight() + 5, 18)
+    for i = 1, #rows do PlaceRow(UI.bars[i], y); y = y - 34 end
+    y = y - 2
+  end
+  PlaceRow(UI.prioHeader, y); y = y - math.max(UI.prioHeader:GetStringHeight() + 4, 16)
+  for i = 1, PRIO_MAX do
+    if UI.prio[i]:IsShown() then PlaceRow(UI.prio[i], y); y = y - 15 end
+  end
+  UI.frame:SetHeight(math.max(-y + PAD, 300))
+end
+
+------------------------------------------------------------------------
 -- Refresh: fill everything in
 ------------------------------------------------------------------------
 function Refresh()
   if not UI.frame then return end
   if FOREVER then return RefreshForever() end
+  if MISTS then return UI.RefreshMists() end
   if RETAIL then return RefreshRetail() end
   local class, spec, context = Resolve()
   local cd = D.classes[class]
@@ -3167,12 +3483,12 @@ local function indexOf(t, v) for i, x in ipairs(t) do if x == v then return i en
 -- The two flavors browse different rosters: retail has 13 classes and 39 specs,
 -- classic the 9 TBC ones. Everything below works off whichever pair applies.
 local function browseTables()
-  if RETAIL then return D.retail.classOrder, D.retail.classes end
+  if RETAIL or MISTS then local r = ns.SpecData(); return r.classOrder, r.classes end
   return D.classOrder, D.classes
 end
 
 local function currentPick()
-  if RETAIL then local c, s = RetailDetect(); return c, s end
+  if RETAIL or MISTS then local c, s = RetailDetect(); return c, s end
   local c, s = Resolve(); return c, s
 end
 
@@ -3222,7 +3538,7 @@ UI.toggleMode = function()
 end
 
 UI.cycleContext = function(dir)
-  if RETAIL then return end   -- retail has no leveling/preraid/endgame tiers (yet)
+  if RETAIL or MISTS then return end   -- no leveling/preraid/endgame tiers there (yet)
   dir = dir or 1
   local order = { "leveling", "preraid", "endgame" }
   local _, _, cur = Resolve()
@@ -4029,7 +4345,7 @@ local function HideTipBars()
 end
 
 
-if not RETAIL then
+if not RETAIL and not MISTS then
   -- Every row in the Melee/Ranged/Spell/Defenses panels gets the cap block;
   -- only the Base Stats rows stay clean. Blacklist beats whitelist here: the
   -- panels' titles vary ("Bonus Damage", "Mana Regen", "Resilience", ...) and a
@@ -4316,6 +4632,8 @@ ev:RegisterEvent("CHARACTER_POINTS_CHANGED")
 ev:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
 ev:RegisterEvent("COMBAT_RATING_UPDATE")
 if RETAIL then ev:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED") end  -- retail spec swaps
+-- Mists: spec swaps too. pcall, as for Forever: an unknown event is an error.
+if MISTS then pcall(ev.RegisterEvent, ev, "PLAYER_SPECIALIZATION_CHANGED") end
 -- Forever: skill-ups move the bars. pcall because registering an event the client
 -- does not know is an error, and the event list of that client is not published.
 if FOREVER then pcall(ev.RegisterEvent, ev, "SKILL_LINES_CHANGED") end
@@ -4390,7 +4708,7 @@ local function DumpPanel()
   local _, class = UnitClass("player")
   local d = {
     when = date("%Y-%m-%d %H:%M:%S"),
-    flavor = FOREVER and "forever" or (RETAIL and "retail" or "classic"),
+    flavor = FOREVER and "forever" or (MISTS and "mists") or (RETAIL and "retail" or "classic"),
     class = class, level = UnitLevel("player"),
     frame = box(UI.frame), frameShown = UI.frame:IsShown() and true or false,
     inCombat = UnitAffectingCombat("player") and true or false,
@@ -4418,6 +4736,24 @@ local function DumpPanel()
         box = box(b),
       }
     end
+  end
+  if MISTS then
+    local function v(fn, ...) local ok, a, b, c = pcall(fn, ...); if ok then return { a, b, c } end end
+    local util = rawget(_G, "PaperDollFrameUtil")
+    d.raw = {
+      interface = select(4, GetBuildInfo()),
+      spec = v(GetSpecializationInfo, (safe(GetSpecialization)) or 0),
+      hitRatingMelee = v(GetCombatRating, CR_HIT_MELEE), hitBonusMelee = v(GetCombatRatingBonus, CR_HIT_MELEE),
+      hitRatingRanged = v(GetCombatRating, CR_HIT_RANGED), hitBonusRanged = v(GetCombatRatingBonus, CR_HIT_RANGED),
+      hitRatingSpell = v(GetCombatRating, CR_HIT_SPELL), hitBonusSpell = v(GetCombatRatingBonus, CR_HIT_SPELL),
+      expRating = v(GetCombatRating, CR_EXPERTISE), expBonus = v(GetCombatRatingBonus, CR_EXPERTISE),
+      hitModifier = v(GetHitModifier), spellHitModifier = v(GetSpellHitModifier),
+      expertise = v(GetExpertise), expertisePercent = rawget(_G, "GetExpertisePercent") and v(GetExpertisePercent),
+      spirit = v(UnitStat, "player", 5),
+      sheetMissMelee = rawget(_G, "GetMeleeMissChance") and v(GetMeleeMissChance, 3, true),
+      sheetMissSpell = rawget(_G, "GetSpellMissChance") and v(GetSpellMissChance, 3),
+      constantsLoaded = (type(util) == "table" and type(util.Constants) == "table") and true or false,
+    }
   end
   StatCoachDB.panelDump = d
   print("|cffffd100StatCoach|r: panel written (" .. #d.bars .. " bars, " .. #d.lines .. " lines) - /reload saves it to disk.")
