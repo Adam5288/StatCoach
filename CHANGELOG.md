@@ -11,7 +11,7 @@
 
 StatCoach now runs on Classic Era - Hardcore and Season of Discovery realms too: a
 hit cap worked out from your weapon skill, your weapon skill itself, and a stat
-priority for every talent tree.
+priority for every talent tree a Classic guide covers.
 
 ## A hit cap that follows your weapon skill
 
