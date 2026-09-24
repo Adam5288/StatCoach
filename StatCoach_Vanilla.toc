@@ -1,0 +1,18 @@
+﻿## Interface: 11509
+## Title: StatCoach
+## Notes: Hit caps from your weapon skill, weapon skill itself, and your talent tree's stat priority, for Classic Era
+## Author: Adam
+## Version: 1.1.26
+## SavedVariables: StatCoachDB
+## IconTexture: Interface\AddOns\StatCoach\Media\logo
+## X-Category: Combat
+
+# Minimap button via LibDBIcon (LibStub -> CallbackHandler -> LDB -> DBIcon order matters)
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
+
+StatCoachData.lua
+StatCoachData_Era.lua
+StatCoach.lua

@@ -33,6 +33,11 @@ local FOREVER = RETAIL and (select(4, GetBuildInfo()) or 0) < 20000
 local MISTS = not RETAIL and (select(4, GetBuildInfo()) or 0) >= 50000
                          and (select(4, GetBuildInfo()) or 0) < 60000
 
+-- Classic Era (1.15.x, also Season of Discovery and Hardcore) is neither of those:
+-- Vanilla rules on the classic client - level 60, weapon skill, no ratings. A field,
+-- not a local: this file sits at Lua's 200-local limit for one chunk.
+ns.ERA = not RETAIL and (select(4, GetBuildInfo()) or 0) < 20000
+
 -- The item and spec functions live in namespaces now. The old globals are already
 -- gone on the newest Mainline-family client, while C_Item and C_SpecializationInfo
 -- exist on every client this file runs on. Namespace first, global as the fallback.
@@ -1248,6 +1253,7 @@ end
 local function evalItem(link)
   if FOREVER then return nil end   -- no verdicts without data: see the FOREVER path
   if MISTS then return nil end     -- Mists: caps and priority first, item verdicts later
+  if ns.ERA then return nil end    -- Era: the same
   if RETAIL then return retailEvalItem(link) end
   if not curCtx.role or type(GetItemInfoInstant) ~= "function" then return nil end
   local equipLoc = select(4, GetItemInfoInstant(link))   -- instant: works even uncached
@@ -1477,7 +1483,7 @@ end
 
 -- Which gem belongs in a socket of each colour, for the player's role right now.
 local function GemPicks(link)
-  if RETAIL or MISTS then return nil end
+  if RETAIL or MISTS or ns.ERA then return nil end
   local role = curCtx and curCtx.role
   local list = role and D.GEMS and D.GEMS[role]
   if not list then return nil end
@@ -2192,9 +2198,9 @@ local function RefreshNotes(spec)
   local parts = UI.infoParts or {}
   local text = (#parts > 0) and table.concat(parts, "\n\n") or "No notes for this context."
   -- Coach-series line (flavor-matched: TBC promotes TBC, retail promotes retail).
-  -- Forever and Mists get none: neither addon does anything on those clients.
+  -- Forever, Mists and Era get none: neither addon does anything on those clients.
   local partner
-  if not (FOREVER or MISTS) then
+  if not (FOREVER or MISTS or ns.ERA) then
     partner = RETAIL and "TrinketCoach - trinket tiers right on your tooltips."
       or "GearCoach - BiS checklists and where to get them."
   end
@@ -3307,12 +3313,426 @@ UI.RefreshMists = function()
 end
 
 ------------------------------------------------------------------------
+-- ERA path (Classic Era 1.15.x - Season of Discovery and Hardcore realms run on the
+-- same client). No specializations: the spec is the talent tree with the most
+-- points, as on TBC. Era's own character sheet shows no hit at all (Blizzard_
+-- CharacterFrame/Vanilla/PaperDollFrame.lua, build 1.15.9.69722), so hit is the
+-- game's hit modifier and the cap is worked out from your weapon skill with the
+-- attack table Classic players measured (github.com/magey/classic-warrior/wiki/
+-- Attack-table; Wowhead's pages agree: 9% at 300 skill, 6% at 305):
+--   gap = target defense - weapon skill               (a raid boss has 315)
+--   gap > 10:  miss 5% + gap * 0.2%, and the first (gap - 10) * 0.2% of hit is ignored
+--   gap <= 10: miss 5% + gap * 0.1%
+-- Spells: a target of your level resists 4%, one three levels up 17%, and 99% is the
+-- most that can land - so 3% and 16% of spell hit (Wowhead's spell hit table).
+-- All fields on UI/ns: this file sits at Lua's 200-local limit for one chunk.
+------------------------------------------------------------------------
+UI.ERA_SPELL_MISS = { [0] = 4, [1] = 5, [2] = 6, [3] = 17 }
+
+-- Talent hit that only counts for one school, which the game's spell hit number leaves
+-- out. The game's data says why: these four are "Modifies Hit Chance (16)" effects on
+-- certain spells, while the hit number adds up "Mod ... Hit Chance %" auras only -
+-- Surefooted, which is one, measured inside it (Wowhead Classic spell pages 11222,
+-- 29438, 18174, 15260 vs 19290; CharacterStatsClassic adds three of them by hand too).
+-- Found by tier and column, never by index: this client's index order within a tree
+-- is not the tree's layout (Improved Corruption, tier 1 column 3, reads as index 3).
+-- Positions from LibClassicInspector's Era tables, which match the client's own tier
+-- and column for every talent the dumps showed. maxRank is the identity check.
+-- { tab, tier, column, maxRank, % per rank, schools, only for spec }
+UI.ERA_SCHOOL_HIT = {
+  MAGE    = { { 1, 1, 2, 5, 2, { [7] = true } },                              -- Arcane Focus
+              { 3, 1, 3, 3, 2, { [3] = true, [5] = true } } },                -- Elemental Precision
+  WARLOCK = { { 1, 1, 2, 5, 2, { [6] = true }, "Affliction" } },              -- Suppression
+  PRIEST  = { { 3, 2, 3, 5, 2, { [6] = true } } },                            -- Shadow Focus
+}
+
+-- Class, spec and spec data. AUTO reads the talent tree with the most points (the
+-- fifth return of GetTalentTabInfo on this client, read off the probe 24 Sep 2026);
+-- a druid in bear form gets the bear list. MANUAL browses like everywhere else.
+ns.EraPick = function()
+  local E = D and D.era
+  local _, class = UnitClass("player")
+  local cd = E and E.classes[class or ""]
+  local detected
+  if cd and type(GetTalentTabInfo) == "function" then
+    local best, bestPts = nil, 0
+    for i = 1, 3 do
+      local ok, _, _, _, _, pts = pcall(GetTalentTabInfo, i)
+      pts = ok and tonumber(pts) or 0
+      if pts > bestPts then best, bestPts = i, pts end
+    end
+    detected = best and cd.tabSpec[best]
+    if detected == "Feral (Cat)" then
+      local form = safe(GetShapeshiftFormID)
+      if form == 5 or form == 8 then detected = "Feral (Bear)" end
+    end
+  end
+  local pc, ps = class, detected
+  local db = StatCoachDB
+  if db and db.manual and E then
+    if E.classes[db.manualClass or ""] then pc = db.manualClass end
+    local pcd = E.classes[pc or ""]
+    ps = (pcd and pcd.specs[db.manualSpec or ""] and db.manualSpec) or (pcd and pcd.specOrder[1])
+  end
+  local pcd = E and E.classes[pc or ""]
+  return pc, ps, pcd and pcd.specs[ps or ""], detected
+end
+
+UI.RefreshEra = function()
+  if not UI.frame then return end
+  local class, specName, sd = ns.EraPick()
+  curCtx.role = nil
+  curCtx.weights = {}
+  curCtx.retailSd = false         -- no item verdicts on Era yet
+  wipe(bagCache)
+  UI.gemBtn:Hide(); UI.enchBtn:Hide(); UI.ctxBtn:Hide(); UI.row2:Hide()
+  UI.radar:Hide()
+  UI.compareHeader:Hide(); UI.compareLine:Hide()
+
+  -- Season of Discovery runs on this client, but its runes rewrite what each spec
+  -- wants: the caps still hold there, the Era stat lists do not.
+  local sodId = (Enum and Enum.SeasonID and Enum.SeasonID.SeasonOfDiscovery) or 2
+  local sod = C_Seasons ~= nil and safe(C_Seasons.GetActiveSeason) == sodId
+
+  local level = UnitLevel("player") or 1
+  local cc = (RAID_CLASS_COLORS and class and RAID_CLASS_COLORS[class]) or { r = 1, g = 1, b = 1 }
+  local hex = string.format("%02x%02x%02x", cc.r * 255, cc.g * 255, cc.b * 255)
+  UI.info:SetText(string.format("Lv %d  |cff%s%s|r  \226\128\162  %s%s",
+    level, hex, class or "?", specName or "no talents yet", sod and "  \226\128\162  Season of Discovery" or ""))
+
+  -- Class / spec row: AUTO follows the character, MANUAL browses.
+  local manual = StatCoachDB.manual
+  UI.row1:Show()
+  UI.classBtn:SetLabel(class or "?")
+  UI.specBtn:SetLabel(specName or "?")
+  UI.autoBtn:SetLabel(manual and "|cffffff00MANUAL|r" or "|cff40ff40AUTO|r")
+  UI.classBtn:SetAlpha(manual and 1 or 0.45)
+  UI.specBtn:SetAlpha(manual and 1 or 0.45)
+  UI.specBtn:SetPoint("LEFT", UI.classBtn, "RIGHT", 4, 0)
+  UI.autoBtn:ClearAllPoints()
+  UI.autoBtn:SetPoint("RIGHT", UI.autoBtn:GetParent(), "RIGHT", 0, 0)
+  local rowW = UI.autoBtn:GetParent():GetWidth() or 0
+  local maxSpec = rowW - UI.classBtn:GetWidth() - UI.autoBtn:GetWidth() - 12
+  if maxSpec > 40 and UI.specBtn:GetWidth() > maxSpec then
+    UI.specBtn:SetWidth(maxSpec)
+    UI.specBtn.text:SetWidth(maxSpec - 12)
+  end
+
+  -- Against whom: a target of your own level while leveling, a raid boss from five
+  -- levels below the cap, because that is the number gear is then chosen by.
+  local maxLevel = safe(GetMaxPlayerLevel) or 60
+  local vsBoss = level >= maxLevel - 5
+  local targetLevel = vsBoss and (maxLevel + 3) or level
+  -- Before the first talent point there is no spec yet; the class still decides what
+  -- it hits with, so the weapon skill and hit bars are there from level 1.
+  local attack
+  if sd then attack = sd.attack
+  else attack = ({ MAGE = "spell", PRIEST = "spell", WARLOCK = "spell", HUNTER = "ranged" })[class or ""] or "melee" end
+  local school = sd and sd.school
+  local tank = sd and sd.role == "TANK"
+  local function hitCap(skill, vsLevel)
+    local gap = math.max(0, (vsLevel or targetLevel) * 5 - skill)
+    if gap > 10 then return 5 + gap * 0.2 + (gap - 10) * 0.2 end
+    return 5 + gap * 0.1
+  end
+
+  -- Weapon skill in your hands: base, plus what racials and items add
+  local mhBase, mhMod, ohBase, ohMod = safe(UnitAttackBothHands, "player")
+  local rBase, rMod = safe(UnitRangedAttack, "player")
+  local mhSkill = num(mhBase) + num(mhMod)
+  local rSkill = num(rBase) + num(rMod)
+
+  local hitRows = {}
+  local talentHit = 0
+  if attack == "spell" then
+    local spellHit = desecret(safe(GetSpellHitModifier))
+    for _, t in ipairs(UI.ERA_SCHOOL_HIT[class or ""] or {}) do
+      if school and t[6][school] and (not t[7] or t[7] == specName) then
+        for i = 1, tonumber((safe(GetNumTalents, t[1]))) or 0 do
+          local ok, _, _, tier, column, rank, maxRank = pcall(GetTalentInfo, t[1], i)
+          if ok and tier == t[2] and column == t[3] then
+            if maxRank == t[4] and rank and rank > 0 then talentHit = talentHit + rank * t[5] end
+            break
+          end
+        end
+      end
+    end
+    local d = math.min(3, math.max(0, targetLevel - level))
+    if spellHit then
+      hitRows[1] = { label = "Spell hit", cur = spellHit + talentHit, cap = UI.ERA_SPELL_MISS[d] - 1 }
+    end
+  elseif attack == "ranged" then
+    -- The hit modifier carries gear AND talent hit: a level-52 hunter with Surefooted 3/3
+    -- and 1% on the legs read 4 (24 Sep 2026). This client has no GetRangedHitModifier.
+    local h = desecret(safe(rawget(_G, "GetRangedHitModifier") or GetHitModifier))
+    -- Biznicks 247x128 Accurascope: +3% ranged hit the modifier does not include
+    -- (enchant 2523; CharacterStatsClassic adds it the same way)
+    local link = GetInventoryItemLink("player", 18)
+    if h and link and tonumber(link:match("item:%d+:(%d*)") or "") == 2523 then h = h + 3 end
+    if h then hitRows[1] = { label = "Ranged hit", cur = h, cap = hitCap(rSkill), skill = rSkill } end
+  elseif attack == "melee" then
+    local h = desecret(safe(GetHitModifier))
+    if h then hitRows[1] = { label = "Hit", cur = h, cap = hitCap(mhSkill), skill = mhSkill } end
+  end
+  local versus = vsBoss and "raid bosses" or ("level " .. level)
+  for _, r in ipairs(hitRows) do r.label = r.label .. " vs " .. versus end
+
+  -- Weapon skill bars: only what is in your hands. Melee gets main hand (and off-hand
+  -- when it holds a weapon), a hunter the bow or gun, a caster the wand it fires.
+  -- Tanks get Defense on top. A weapon racial is already inside the base skill the
+  -- game reports (a level-1 human reads 6 in maces: 1 plus the racial 5), so it
+  -- raises the maximum too.
+  local skillRows = {}
+  local _, race = UnitRace("player")
+  local racialKinds = RACIAL_WEAPONS[race or ""] or {}
+  local function weaponRow(slot, hand, base, mod)
+    local link = GetInventoryItemLink("player", slot)
+    local kind = link and select(3, GetItemInfoInstant(link))
+    if not link and slot ~= 16 then return end
+    base = tonumber(base)
+    if not base or base <= 0 then return end
+    -- The weapon type alone fits the bar ("Main hand - Two-Handed Maces" was cut off in
+    -- the client, 24 Sep 2026); the off-hand only says so when it is the same type.
+    local name = kind or "Unarmed"
+    if hand == "Wand" then name = hand
+    elseif hand == "Off hand" and skillRows[1] and skillRows[1].kind == (kind or "unarmed") then name = hand end
+    skillRows[#skillRows + 1] = { name = name, kind = kind or "unarmed",
+      rank = base, max = level * 5 + (weaponBenefits(link, racialKinds) and 5 or 0),
+      bonus = num(tonumber(mod)), weapon = true }
+  end
+  -- A druid fights in forms, where weapon skill does not apply: no weapon bars there.
+  local druid = class == "DRUID"
+  if attack == "melee" and not druid then
+    weaponRow(16, "Main hand", mhBase, mhMod)
+    if IsDualWielding() then weaponRow(17, "Off hand", ohBase, ohMod) end
+  elseif attack == "ranged" then
+    weaponRow(18, "Ranged", rBase, rMod)
+  elseif GetInventoryItemLink("player", 18) and not druid then
+    weaponRow(18, "Wand", rBase, rMod)
+  end
+  if tank then
+    local base, mod = safe(UnitDefense, "player")
+    base = tonumber(base)
+    if base then
+      skillRows[#skillRows + 1] = { name = "Defense", rank = base, max = level * 5, bonus = num(tonumber(mod)),
+        cap = vsBoss and 440 or nil }
+    end
+  end
+  local CRIT_PER_SKILL = 0.04   -- per point below the maximum (measured on Forever, same ruleset)
+  local function critCost(sk)
+    if not sk.weapon or sk.rank >= sk.max then return 0 end
+    return (sk.max - sk.rank) * CRIT_PER_SKILL
+  end
+  local function costText(cost) return string.format(cost < 1 and "%.2f%%" or "%.1f%%", cost) end
+
+  if not UI.fvHitHeader then
+    local h = UI.frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    h:SetJustifyH("LEFT"); h:SetWordWrap(false)
+    UI.fvHitHeader = h
+  end
+  UI.fvHitHeader:SetText(attack == "spell" and "|cffffd100SPELL HIT|r  |cff888888(the most that can land)|r"
+    or "|cffffd100HIT|r  |cff888888(what it takes to never miss)|r")
+  if #hitRows > 0 then UI.fvHitHeader:Show() else UI.fvHitHeader:Hide() end
+  UI.capHeader:SetText("|cffffd100" .. (tank and "WEAPON SKILL & DEFENSE" or "WEAPON SKILL") ..
+    "|r  |cff888888(skill / max)|r")
+  if #skillRows > 0 then UI.capHeader:Show() else UI.capHeader:Hide() end
+
+  for i = 1, BAR_MAX do
+    local b = UI.bars[i]
+    local h, sk = hitRows[i], skillRows[i - #hitRows]
+    b.bar.markFrac = nil
+    b.bar.mark:Hide()
+    if h then
+      local done = h.cur >= h.cap - 0.005
+      b.label:SetText(h.label)
+      b.bar:SetValue(math.min(1, h.cur / h.cap))
+      if done then b.bar:SetStatusBarColor(0.2, 0.7, 0.2) else b.bar:SetStatusBarColor(0.3, 0.55, 0.9) end
+      b.val:SetText(fmt(h.cur) .. "% / " .. fmt(h.cap) .. "%" .. (done and "  |cff40ff40capped|r" or ""))
+      b:Show()
+    elseif sk then
+      local total = sk.rank + sk.bonus
+      local goal = sk.cap or sk.max
+      local shown = sk.cap and total or sk.rank
+      b.label:SetText(sk.name .. (sk.cap and " vs raid bosses" or ""))
+      b.bar:SetValue(math.min(1, shown / goal))
+      if shown >= goal then b.bar:SetStatusBarColor(0.2, 0.7, 0.2)
+      else b.bar:SetStatusBarColor(0.85, 0.65, 0.1) end
+      local txt = string.format("%d / %d", shown, goal)
+      if not sk.cap and sk.bonus > 0 then txt = txt .. string.format("  |cff40ff40(+%d)|r", sk.bonus) end
+      local cost = critCost(sk)
+      if cost > 0 then txt = txt .. "  |cffff9040-" .. costText(cost) .. " crit|r" end
+      b.val:SetText(txt)
+      b:Show()
+    else b:Hide() end
+  end
+
+  -- The stat list, each with the character's own number next to it. Not on Season
+  -- of Discovery, where the Era guides do not apply.
+  local list = (not sod and sd and sd.stats) or {}
+  local reads = attack or "spell"
+  local function p2(v) v = desecret(v); return v and string.format("%.2f%%", v) or nil end
+  local function big(v)
+    v = desecret(v)
+    if not v then return nil end
+    v = math.floor(v + 0.5)
+    return (type(BreakUpLargeNumbers) == "function" and BreakUpLargeNumbers(v)) or tostring(v)
+  end
+  local function unitStat(i) local _, eff = safe(UnitStat, "player", i); return eff end
+  local mainHit = hitRows[1]
+  local VALUE = {
+    Strength  = function() return big(unitStat(1)) end,
+    Agility   = function() return big(unitStat(2)) end,
+    Stamina   = function() return big(unitStat(3)) end,
+    Intellect = function() return big(unitStat(4)) end,
+    Spirit    = function() return big(unitStat(5)) end,
+    Hit       = function() return mainHit and p2(mainHit.cur) end,
+    ["Spell Hit"] = function() return mainHit and p2(mainHit.cur) end,
+    Crit      = function() return p2(safe(reads == "ranged" and GetRangedCritChance or GetCritChance)) end,
+    ["Spell Crit"] = function() return p2(safe(GetSpellCritChance, school or 2)) end,
+    Haste     = function() return p2(safe(GetMeleeHaste)) end,
+    ["Spell Damage"]  = function() return big(safe(GetSpellBonusDamage, school or 2)) end,
+    ["Healing Power"] = function() return big(safe(GetSpellBonusHealing)) end,
+    ["Attack Power"] = function()
+      local b, p, n = safe(reads == "ranged" and UnitRangedAttackPower or UnitAttackPower, "player")
+      if b == nil then return nil end
+      return big(num(desecret(b)) + num(desecret(p)) + num(desecret(n)))
+    end,
+    ["Weapon Skill"] = function() return mhSkill > 0 and tostring(mhSkill) or nil end,
+    Defense = function() local b, m = safe(UnitDefense, "player"); return b and tostring(num(b) + num(m)) end,
+    Armor = function() local _, eff = safe(UnitArmor, "player"); return big(eff) end,
+    Dodge = function() return p2(safe(GetDodgeChance)) end,
+  }
+  UI.prioHeader:SetText("|cffffd100PRIORITY|r" .. (vsBoss and "" or "  |cff888888(for level 60 raiding)|r"))
+  for i = 1, PRIO_MAX do
+    local t, st = UI.prio[i], list[i]
+    if st then
+      local v = VALUE[st] and VALUE[st]()
+      t:SetText("|cffaaaaaa" .. i .. ".|r  " .. st .. (v and ("  |cffffffff" .. v .. "|r") or ""))
+      t:Show()
+    else t:SetText(""); t:Hide() end
+  end
+
+  -- NOW: the one thing to do. A weapon skill that lags is the one thing a leveling
+  -- character can fix on the spot, so it goes first; then hit; then the next stat.
+  local IS_HIT = { Hit = true, ["Spell Hit"] = true, ["Weapon Skill"] = true }
+  local function nextStat()
+    for _, st in ipairs(list) do if not IS_HIT[st] then return st end end
+  end
+  -- (a caster's wand gets its bar, but never the NOW line)
+  local lag
+  if attack == "melee" or attack == "ranged" then
+    for _, sk in ipairs(skillRows) do if sk.weapon and sk.rank < sk.max then lag = sk; break end end
+  end
+  local now
+  if lag then
+    -- it only costs hit while the skill sits below the target's defense
+    local hurtsHit = lag.rank + lag.bonus < targetLevel * 5
+    now = string.format("Your %s skill is %d of %d - that costs you %s crit%s. " ..
+      "It only rises while you fight with that weapon.", lag.kind, lag.rank, lag.max, costText(critCost(lag)),
+      hurtsHit and " and raises the hit you need" or "")
+  elseif not sd then
+    now = level < 10 and "Talents start at level 10 - StatCoach reads your spec from where you spend them."
+      or "Spend a talent point and StatCoach reads your spec from it."
+  elseif sd.role == "HEALER" then
+    now = "Healers have no hit cap." .. (list[1] and (" " .. list[1] .. " comes first for you.") or "")
+  elseif mainHit and mainHit.cur < mainHit.cap - 0.005 and (vsBoss or mainHit.cur > 0) then
+    local left = mainHit.cap - mainHit.cur
+    if attack == "spell" then
+      -- 1% of spells is always resisted, on top of what hit can remove
+      now = string.format("%s resists %.1f%% of your spells - %.1f%% more spell hit to go.",
+        vsBoss and "A raid boss" or ("A level " .. level .. " target"), left + 1, left)
+    else
+      now = string.format("You miss %s %.1f%% of the time - %.1f%% more hit to go.",
+        vsBoss and "a raid boss" or ("a level " .. level .. " target"), left, left)
+    end
+    if vsBoss and mainHit.skill and mainHit.skill < targetLevel * 5 - 10 and not druid then
+      now = now .. string.format(" %d more weapon skill would lower the cap to %.1f%%.",
+        targetLevel * 5 - 10 - mainHit.skill, hitCap(targetLevel * 5 - 10))
+    elseif list[1] and not IS_HIT[list[1]] then
+      now = now .. " Your guide still ranks " .. list[1] .. " above it."
+    end
+  elseif mainHit and mainHit.cur >= mainHit.cap - 0.005 then
+    local nx = nextStat()
+    now = (sd.dw and "Hit is capped for your specials; past it, hit still helps your white swings."
+      or "Hit is capped - more does nothing.") .. (nx and (" Your next stat is " .. nx .. ".") or "")
+  else
+    -- only a stat the guide put first; no list (Season of Discovery), no stat named
+    local nx = nextStat()
+    now = (nx and string.format("While leveling, %s carries you.", nx) or "Nothing to fix right now.") ..
+      string.format(" The hit bar switches to raid bosses at level %d.", maxLevel - 5)
+  end
+  UI.nowLine:SetText("|cffffd100NOW:|r |cffffffff" .. now .. "|r")
+  UI.nowLine:Show()
+
+  -- Notes behind the "i" icon, only the ones that fit the role
+  UI.infoParts = {}
+  if sod then
+    UI.infoParts[#UI.infoParts + 1] = "SEASON OF DISCOVERY. Runes change what each spec wants, so the " ..
+      "Classic Era stat lists are switched off here. Hit caps and weapon skill work the same, and stay on."
+  elseif sd and sd.notes then
+    UI.infoParts[#UI.infoParts + 1] = sd.notes
+  end
+  if attack == "melee" or attack == "ranged" then
+    local skill = mainHit and mainHit.skill or 300
+    UI.infoParts[#UI.infoParts + 1] = string.format("HIT. A raid boss has 315 defense. At 300 weapon skill " ..
+      "you miss it 8%% of the time, and because the gap is over 10 points the game also ignores your first " ..
+      "1%% of hit - so you need 9%%. At 305 the gap is 10, and 6%% does it. Against raid bosses your skill " ..
+      "of %d puts the cap at %.1f%%.%s",
+      skill, hitCap(skill, maxLevel + 3),
+      sd and sd.dw and " Dual wielding adds 19% to white swings only; specials use the cap above." or "")
+    if not druid then
+      UI.infoParts[#UI.infoParts + 1] = "WEAPON SKILL. The maximum is five per level. Every point below it " ..
+        "costs about 0.04% crit and raises the hit you need; extra skill from racials and items lowers it."
+    end
+  elseif attack == "spell" then
+    UI.infoParts[#UI.infoParts + 1] = "SPELL HIT. A raid boss resists 17% of your spells, and 1% always gets " ..
+      "resisted - so 16% spell hit is the cap (3% against a target of your level)." ..
+      (talentHit > 0 and string.format(" The game's spell hit number leaves out talents that only work for " ..
+        "one school; StatCoach adds your %d%% from them.", talentHit) or "")
+  end
+  if tank then
+    UI.infoParts[#UI.infoParts + 1] = "DEFENSE. 440 defense stops raid bosses from landing critical strikes on you."
+  end
+  if not sod and sd and sd.source then UI.infoParts[#UI.infoParts + 1] = sd.source end
+  if UI.notesPopup and UI.notesPopup:IsShown() then RefreshNotes(specName) end
+
+  -- Layout: NOW, then what you can act on (hit, weapon skill), then the list
+  local y = -34
+  PlaceRow(UI.info, y); y = y - math.max(UI.info:GetStringHeight() + 4, 18)
+  PlaceRow(UI.row1, y); y = y - 24
+  PlaceRow(UI.nowLine, y); y = y - (UI.nowLine:GetStringHeight() + 8)
+  if #hitRows > 0 then
+    PlaceRow(UI.fvHitHeader, y); y = y - math.max(UI.fvHitHeader:GetStringHeight() + 5, 18)
+    for i = 1, #hitRows do PlaceRow(UI.bars[i], y); y = y - 34 end
+    y = y - 2
+  end
+  if #skillRows > 0 then
+    PlaceRow(UI.capHeader, y); y = y - math.max(UI.capHeader:GetStringHeight() + 5, 18)
+    for i = #hitRows + 1, BAR_MAX do
+      if UI.bars[i]:IsShown() then PlaceRow(UI.bars[i], y); y = y - 34 end
+    end
+    y = y - 2
+  end
+  if #list > 0 then
+    PlaceRow(UI.prioHeader, y); y = y - math.max(UI.prioHeader:GetStringHeight() + 4, 16)
+    UI.prioHeader:Show()
+    for i = 1, PRIO_MAX do
+      if UI.prio[i]:IsShown() then PlaceRow(UI.prio[i], y); y = y - 15 end
+    end
+  else
+    UI.prioHeader:Hide()
+  end
+  UI.frame:SetHeight(math.max(-y + PAD, 300))
+end
+
+------------------------------------------------------------------------
 -- Refresh: fill everything in
 ------------------------------------------------------------------------
 function Refresh()
   if not UI.frame then return end
   if FOREVER then return RefreshForever() end
   if MISTS then return UI.RefreshMists() end
+  if ns.ERA then return UI.RefreshEra() end
   if RETAIL then return RefreshRetail() end
   local class, spec, context = Resolve()
   local cd = D.classes[class]
@@ -3484,11 +3904,13 @@ local function indexOf(t, v) for i, x in ipairs(t) do if x == v then return i en
 -- classic the 9 TBC ones. Everything below works off whichever pair applies.
 local function browseTables()
   if RETAIL or MISTS then local r = ns.SpecData(); return r.classOrder, r.classes end
+  if ns.ERA then return D.era.classOrder, D.era.classes end
   return D.classOrder, D.classes
 end
 
 local function currentPick()
   if RETAIL or MISTS then local c, s = RetailDetect(); return c, s end
+  if ns.ERA then local c, s = ns.EraPick(); return c, s end
   local c, s = Resolve(); return c, s
 end
 
@@ -3538,7 +3960,7 @@ UI.toggleMode = function()
 end
 
 UI.cycleContext = function(dir)
-  if RETAIL or MISTS then return end   -- no leveling/preraid/endgame tiers there (yet)
+  if RETAIL or MISTS or ns.ERA then return end   -- no leveling/preraid/endgame tiers there (yet)
   dir = dir or 1
   local order = { "leveling", "preraid", "endgame" }
   local _, _, cur = Resolve()
@@ -4345,7 +4767,7 @@ local function HideTipBars()
 end
 
 
-if not RETAIL and not MISTS then
+if not RETAIL and not MISTS and not ns.ERA then
   -- Every row in the Melee/Ranged/Spell/Defenses panels gets the cap block;
   -- only the Base Stats rows stay clean. Blacklist beats whitelist here: the
   -- panels' titles vary ("Bonus Damage", "Mana Regen", "Resilience", ...) and a
@@ -4637,6 +5059,10 @@ if MISTS then pcall(ev.RegisterEvent, ev, "PLAYER_SPECIALIZATION_CHANGED") end
 -- Forever: skill-ups move the bars. pcall because registering an event the client
 -- does not know is an error, and the event list of that client is not published.
 if FOREVER then pcall(ev.RegisterEvent, ev, "SKILL_LINES_CHANGED") end
+if ns.ERA then
+  pcall(ev.RegisterEvent, ev, "SKILL_LINES_CHANGED")
+  pcall(ev.RegisterEvent, ev, "UPDATE_SHAPESHIFT_FORM")   -- a feral druid's list follows bear form
+end
 ev:SetScript("OnEvent", function(_, event, arg1)
   if event == "ADDON_LOADED" and arg1 == ADDON then
     StatCoachDB = StatCoachDB or {}
@@ -4708,7 +5134,7 @@ local function DumpPanel()
   local _, class = UnitClass("player")
   local d = {
     when = date("%Y-%m-%d %H:%M:%S"),
-    flavor = FOREVER and "forever" or (MISTS and "mists") or (RETAIL and "retail" or "classic"),
+    flavor = FOREVER and "forever" or (MISTS and "mists") or (ns.ERA and "era") or (RETAIL and "retail" or "classic"),
     class = class, level = UnitLevel("player"),
     frame = box(UI.frame), frameShown = UI.frame:IsShown() and true or false,
     inCombat = UnitAffectingCombat("player") and true or false,
@@ -4753,6 +5179,57 @@ local function DumpPanel()
       sheetMissMelee = rawget(_G, "GetMeleeMissChance") and v(GetMeleeMissChance, 3, true),
       sheetMissSpell = rawget(_G, "GetSpellMissChance") and v(GetSpellMissChance, 3),
       constantsLoaded = (type(util) == "table" and type(util.Constants) == "table") and true or false,
+    }
+  end
+  if ns.ERA then
+    -- Every return, as text, so a nil in the middle cannot cut the list short
+    local function v(fn, ...)
+      local r = { pcall(fn, ...) }
+      if not r[1] then return { error = tostring(r[2]) } end
+      local out = {}
+      for i = 2, 9 do out[#out + 1] = tostring(r[i]) end
+      return out
+    end
+    -- Talents with points in them, and every tooltip line on the gear that speaks of
+    -- hit or skill: the two things the game's hit numbers may or may not include.
+    local talents = {}
+    for tab = 1, 3 do
+      for i = 1, tonumber((safe(GetNumTalents, tab))) or 0 do
+        local ok, name, _, tier, col, rank, maxRank = pcall(GetTalentInfo, tab, i)
+        if ok and rank and rank > 0 then
+          talents[#talents + 1] = string.format("%d/%d %s tier %s col %s %s/%s", tab, i, tostring(name),
+            tostring(tier), tostring(col), tostring(rank), tostring(maxRank))
+        end
+      end
+    end
+    local gear = {}
+    for slot = 1, 18 do
+      local link = GetInventoryItemLink("player", slot)
+      if link then
+        local lines = {}
+        scanTip:SetOwner(UIParent, "ANCHOR_NONE")
+        scanTip:ClearLines()
+        if pcall(scanTip.SetHyperlink, scanTip, link) then
+          for i = 2, scanTip:NumLines() do
+            local fs = _G["StatCoachScanTipTextLeft" .. i]
+            local t = fs and fs:GetText()
+            if t and (t:lower():find("hit") or t:lower():find("skill")) then lines[#lines + 1] = t end
+          end
+        end
+        gear[#gear + 1] = { slot = slot, link = link, lines = lines }
+      end
+    end
+    local spellCrit = {}
+    for school = 2, 7 do spellCrit[school - 1] = tostring(safe(GetSpellCritChance, school)) end
+    d.raw = {
+      interface = select(4, GetBuildInfo()),
+      season = C_Seasons and v(C_Seasons.GetActiveSeason), form = v(GetShapeshiftFormID),
+      tabs = { v(GetTalentTabInfo, 1), v(GetTalentTabInfo, 2), v(GetTalentTabInfo, 3) },
+      hitModifier = v(GetHitModifier), spellHitModifier = v(GetSpellHitModifier),
+      rangedHitModifier = rawget(_G, "GetRangedHitModifier") and v(GetRangedHitModifier) or "absent",
+      attackBothHands = v(UnitAttackBothHands, "player"), rangedAttack = v(UnitRangedAttack, "player"),
+      defense = v(UnitDefense, "player"), crit = v(GetCritChance), rangedCrit = v(GetRangedCritChance),
+      spellCrit = spellCrit, talents = talents, gear = gear,
     }
   end
   StatCoachDB.panelDump = d
