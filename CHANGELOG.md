@@ -3,6 +3,39 @@
 
 ---
 
+# StatCoach 1.1.25 (Mists)
+
+*24 September 2026*
+
+## StatCoach on Mists of Pandaria Classic
+
+StatCoach now runs on Mists of Pandaria Classic, built for how that expansion plays:
+hit and expertise caps against a raid boss, and a stat priority for all 34
+specializations.
+
+## Hit and expertise on the game's own numbers
+
+The bars work the way the character sheet does: a raid boss starts at 7.5% miss
+(15% for spells), 7.5% dodge and 7.5% parry, and your hit and expertise come off
+that. Damage dealers get a hit bar and an expertise bar. Tanks get a second
+expertise bar for parry, since they face the boss and need 15%. Casters get one
+spell hit bar with their expertise counted in, as it is in combat - the character
+sheet leaves it out.
+
+## One line that says what to do
+
+The NOW line tells you how much hit or expertise rating you are short and which
+stat to reforge it from, or that you have more than you need and where to put the
+rest. Healers get their best secondary stat.
+
+## Your stat priority, with your own numbers
+
+Every specialization gets its stat priority from the Mists of Pandaria Classic
+guides, with your current value next to each stat and a short note behind the "i".
+Item verdicts, gems and enchants are not on Mists yet.
+
+---
+
 # StatCoach 1.1.24 (Forever)
 
 *20 September 2026*
