@@ -3,6 +3,41 @@
 
 ---
 
+# StatCoach 1.1.26 (Classic Era)
+
+*24 September 2026*
+
+## StatCoach on Classic Era
+
+StatCoach now runs on Classic Era - Hardcore and Season of Discovery realms too: a
+hit cap worked out from your weapon skill, your weapon skill itself, and a stat
+priority for every talent tree.
+
+## A hit cap that follows your weapon skill
+
+Against a raid boss you need 9% hit at 300 weapon skill and 6% at 305. The bar works
+out your cap from the skill in your hands, with the attack table Classic players
+measured. Casters get a spell hit bar to 16%, with the talents that add hit to one
+school only - Arcane Focus, Elemental Precision, Suppression and Shadow Focus -
+counted in. While leveling, the bars measure against a target of your own level.
+
+## Weapon skill and defense
+
+Each weapon you hold gets a bar with its skill against the maximum, and what the
+missing points cost you in crit. Tanks also get Defense against the 440 that stops
+raid bosses from critting them.
+
+## Your stat priority, with your own numbers
+
+Your spec is read from the talent tree with the most points and gets its stat
+priority from Wowhead's Classic guides, with your current value next to each stat.
+A feral druid in bear form gets the tank list. Protection paladins get their caps
+only, as no Classic guide publishes a stat order for them. On Season of Discovery
+the lists stay off, since runes change what each spec wants; the caps stay on. Item
+verdicts, gems and enchants are not on Classic Era yet.
+
+---
+
 # StatCoach 1.1.25 (Mists)
 
 *24 September 2026*
