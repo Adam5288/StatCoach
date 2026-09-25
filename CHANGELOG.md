@@ -3,6 +3,19 @@
 
 ---
 
+# StatCoach 1.1.27 (Forever)
+
+*25 September 2026*
+
+## Bear and Cat Form are coached on Feral Combat
+
+A druid in Bear or Cat Form fights with the Feral Combat skill, not with the weapon
+in hand, and StatCoach now says so: in form the skill bar, its crit cost and the NOW
+line follow Feral Combat, which only rises while you fight in form. Shift back and the
+weapon you are holding returns.
+
+---
+
 # StatCoach 1.1.26 (Classic Era)
 
 *24 September 2026*

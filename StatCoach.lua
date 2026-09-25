@@ -2682,6 +2682,11 @@ local FOREVER_WEAPON_SKILL = {
 -- Fist weapons: that same file maps them to 162 (Unarmed) while the constants next
 -- to it name 473 (Fist Weapons). Whichever of the two the character has wins.
 local FOREVER_UNARMED_ID, FOREVER_FIST_ID = 162, 473
+-- Bear and Cat Form fight with the "Feral Combat" line, not with the weapon in hand:
+-- measured on the beta (25 Sep 2026) - fifteen Feral Combat skill-ups moved the sheet's
+-- crit by exactly 15 x 0.04 while the mace's own skill-up moved nothing. Kept on ns:
+-- this chunk is at Lua's limit of 200 locals.
+ns.FOREVER_FERAL_ID = 3014
 
 -- Skill ids of what the character is holding: main hand, off-hand, ranged slot -
 -- except for a hunter, whose bow or gun is the weapon that matters, so the ranged
@@ -2690,6 +2695,11 @@ local FOREVER_UNARMED_ID, FOREVER_FIST_ID = 162, 473
 local function ForeverEquippedSkills(have)
   local ids, seen = {}, {}
   local _, class = UnitClass("player")
+  -- Any form, as in Blizzard's own sheet code (Camelot/PaperDollFrameStats.lua,
+  -- PaperDollFrame_GetEquippedWeaponSkillID: GetShapeshiftForm() ~= 0 -> 3014).
+  if class == "DRUID" and have[ns.FOREVER_FERAL_ID] and (safe(GetShapeshiftForm) or 0) ~= 0 then
+    return { ns.FOREVER_FERAL_ID }, { [ns.FOREVER_FERAL_ID] = true }
+  end
   local order = (class == "HUNTER") and { 18, 16, 17 } or { 16, 17, 18 }
   for _, slot in ipairs(order) do
     local id
@@ -2953,7 +2963,10 @@ local function RefreshForever()
   local mainHit = hitRows[1]
   local now
   local topCost = (top and top.equipped) and critCost(top) or 0
-  if topCost > 0 then
+  if topCost > 0 and top.id == ns.FOREVER_FERAL_ID then
+    now = string.format("%s is %d of %d - that is costing you %s crit in this form. It only rises while you " ..
+      "fight in Bear or Cat Form.", top.name, top.rank, top.max, costText(topCost))
+  elseif topCost > 0 then
     now = string.format("%s is %d of %d - that is costing you %s crit with it. It only rises while you " ..
       "fight with that weapon.", top.name, top.rank, top.max, costText(topCost))
   elseif mainHit and mainHit.cur < mainHit.cap and (vsBoss or mainHit.cur > 0) then
@@ -5058,7 +5071,10 @@ if RETAIL then ev:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED") end  -- retail 
 if MISTS then pcall(ev.RegisterEvent, ev, "PLAYER_SPECIALIZATION_CHANGED") end
 -- Forever: skill-ups move the bars. pcall because registering an event the client
 -- does not know is an error, and the event list of that client is not published.
-if FOREVER then pcall(ev.RegisterEvent, ev, "SKILL_LINES_CHANGED") end
+if FOREVER then
+  pcall(ev.RegisterEvent, ev, "SKILL_LINES_CHANGED")
+  pcall(ev.RegisterEvent, ev, "UPDATE_SHAPESHIFT_FORM")   -- a druid's line follows Bear and Cat Form
+end
 if ns.ERA then
   pcall(ev.RegisterEvent, ev, "SKILL_LINES_CHANGED")
   pcall(ev.RegisterEvent, ev, "UPDATE_SHAPESHIFT_FORM")   -- a feral druid's list follows bear form
