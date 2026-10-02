@@ -1609,29 +1609,47 @@ end
 
 -- Retail removed the OnTooltipSetItem script (Dragonflight+); it uses the
 -- TooltipDataProcessor pipeline instead. Classic keeps the classic hook.
-if (RETAIL or MISTS) and TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall then
-  TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, function(tt)
-    if tt ~= GameTooltip then return end
-    local link
-    if TooltipUtil and TooltipUtil.GetDisplayedItem then
-      local _, l = TooltipUtil.GetDisplayedItem(tt)
-      link = l
-    elseif tt.GetItem then
-      local _, l = tt:GetItem()
-      link = l
+-- Which one a client has is asked of the client itself, never of the flavor: the Forever
+-- beta build of 2 Oct 2026 answered to neither test above and the classic hook raised
+-- "bad argument #2 to '?'" at file scope, which stopped the file here - no panel, no
+-- slash commands, nothing (Group Up's error trace, 2 Oct). HasScript says whether the
+-- classic script exists; a client with neither path gets no tooltip line and the rest
+-- of the addon. (In a do-block: the file's main chunk is at Lua's limit of 200 locals.)
+do
+  local function hasScript(frame, name)
+    if not (frame and frame.HasScript) then return false end
+    local ok, yes = pcall(frame.HasScript, frame, name)
+    return ok and yes == true
+  end
+  local function hookTooltipItem()
+    if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall and Enum and Enum.TooltipDataType then
+      TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, function(tt)
+        if tt ~= GameTooltip then return end
+        local link
+        if TooltipUtil and TooltipUtil.GetDisplayedItem then
+          local _, l = TooltipUtil.GetDisplayedItem(tt)
+          link = l
+        elseif tt.GetItem then
+          local _, l = tt:GetItem()
+          link = l
+        end
+        AddVerdict(tt, link, false)
+      end)
+    elseif hasScript(GameTooltip, "OnTooltipSetItem") then
+      GameTooltip:HookScript("OnTooltipSetItem", function(tt)
+        local _, link = tt:GetItem()
+        AddVerdict(tt, link, false)
+      end)
     end
-    AddVerdict(tt, link, false)
-  end)
-else
-  GameTooltip:HookScript("OnTooltipSetItem", function(tt)
-    local _, link = tt:GetItem()
-    AddVerdict(tt, link, false)
-  end)
+  end
+  pcall(hookTooltipItem)
+  -- Reset the guard whenever the tooltip is cleared/rebuilt. This fires on every rebuild
+  -- (including in-place refreshes), so our line re-appears after a clear but never doubles
+  -- up on a same-build double-fire of OnTooltipSetItem.
+  if hasScript(GameTooltip, "OnTooltipCleared") then
+    GameTooltip:HookScript("OnTooltipCleared", function(tt) tt.scLink = nil end)
+  end
 end
--- Reset the guard whenever the tooltip is cleared/rebuilt. This fires on every rebuild
--- (including in-place refreshes), so our line re-appears after a clear but never doubles
--- up on a same-build double-fire of OnTooltipSetItem.
-GameTooltip:HookScript("OnTooltipCleared", function(tt) tt.scLink = nil end)
 
 -- Quest log rewards, quest-giver rewards and dungeon loot rolls don't always expose
 -- the item link through tt:GetItem(), so fetch it explicitly via post-hooks.
