@@ -16,16 +16,22 @@ local CR_HIT_SPELL  = _G.CR_HIT_SPELL  or 8
 local CR_EXPERTISE  = _G.CR_EXPERTISE  or 24
 local CR_VERSATILITY = _G.CR_VERSATILITY_DAMAGE_DONE or 29
 
+-- World of Warcraft: Forever is a Vanilla ruleset on the retail engine: level 60, weapon
+-- skill and defense, no Mastery or Versatility. Its interface number (16xxx) says so.
+-- It reported itself as Mainline (WOW_PROJECT_ID 1) until the beta build of 2 October
+-- 2026 (1.60.1.70170) gave it a project id of its own, WOW_PROJECT_CAMELOT = 18, read
+-- off the client with CoachProbe - and this panel turned into the Era one, which cannot
+-- read weapon skill or talents on that engine. So the id alone is never trusted.
+local FOREVER = ((select(4, GetBuildInfo()) or 0) >= 16000 and (select(4, GetBuildInfo()) or 0) < 20000)
+  or (WOW_PROJECT_CAMELOT ~= nil and WOW_PROJECT_ID == WOW_PROJECT_CAMELOT)
+
 -- Flavor: retail (Mainline) vs Classic. Retail has NO hit/expertise/defense caps;
 -- it uses Crit/Haste/Mastery/Versatility (diminishing returns) + item level. The whole
 -- Classic engine below stays untouched; retail routes to RefreshRetail() instead.
+-- Forever counts as retail here: the same engine, namespaces and events, and the
+-- FOREVER checks below take it off the retail path where the rules differ.
 local RETAIL = (WOW_PROJECT_ID ~= nil and WOW_PROJECT_MAINLINE ~= nil
-                and WOW_PROJECT_ID == WOW_PROJECT_MAINLINE)
-
--- World of Warcraft: Forever reports itself as Mainline (WOW_PROJECT_ID 1, loads the
--- _Mainline TOC) but it is a Vanilla ruleset on that client: level 60, weapon skill
--- and defense, no Mastery or Versatility. The interface number tells them apart.
-local FOREVER = RETAIL and (select(4, GetBuildInfo()) or 0) < 20000
+                and WOW_PROJECT_ID == WOW_PROJECT_MAINLINE) or FOREVER
 
 -- Mists of Pandaria Classic (5.5.x) has a project id of its own, so RETAIL is false
 -- there - but it is not TBC either: specializations like retail, hit and expertise
