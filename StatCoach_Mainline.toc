@@ -6,6 +6,7 @@
 ## SavedVariables: StatCoachDB
 ## IconTexture: Interface\AddOns\StatCoach\Media\logo
 ## X-Category: Combat
+## OptionalDeps: BetterBags
 
 # Minimap button via LibDBIcon (LibStub -> CallbackHandler -> LDB -> DBIcon order matters)
 Libs\LibStub\LibStub.lua
@@ -16,3 +17,4 @@ Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
 StatCoachData.lua
 StatCoachData_Retail.lua
 StatCoach.lua
+Integrations\BetterBags.lua

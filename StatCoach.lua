@@ -32,6 +32,7 @@ local FOREVER = ((select(4, GetBuildInfo()) or 0) >= 16000 and (select(4, GetBui
 -- FOREVER checks below take it off the retail path where the rules differ.
 local RETAIL = (WOW_PROJECT_ID ~= nil and WOW_PROJECT_MAINLINE ~= nil
                 and WOW_PROJECT_ID == WOW_PROJECT_MAINLINE) or FOREVER
+ns.IsRetail = RETAIL
 
 -- Mists of Pandaria Classic (5.5.x) has a project id of its own, so RETAIL is false
 -- there - but it is not TBC either: specializations like retail, hit and expertise
@@ -1400,6 +1401,12 @@ local function bagUpgradePct(link)
     bagCache[link] = c
   end
   return c or nil
+end
+
+-- Internal integration API: consumers only need the yes/no bag verdict. Keep
+-- the percentage and scoring details private to the core addon.
+ns.IsBagUpgrade = function(link)
+  return bagUpgradePct(link) ~= nil
 end
 
 -- Verdict label + colours (hex for panel, r,g,b for tooltip)
@@ -4455,7 +4462,6 @@ local function SetupBaganatorBadge()
   end
 end
 
-------------------------------------------------------------------------
 -- Quest reward badges: the glow badge directly on the reward buttons, visible
 -- at the moment of choice without hovering (the same surface Pawn picked).
 -- Works without Baganator - it anchors on Blizzard's own quest UI.
@@ -5129,9 +5135,11 @@ ev:SetScript("OnEvent", function(_, event, arg1)
     if not db.shown then UI.frame:Hide() end
     Refresh()
     SetupBaganatorBadge()
+    if ns.BetterBags then ns.BetterBags:Setup() end
     atlasHooked = SetupAtlasLootBadges()
   elseif UI.frame then
     SetupBaganatorBadge()   -- retry until Baganator's API is available
+    if ns.BetterBags then ns.BetterBags:Setup() end  -- retry until BetterBags has initialized
     if not atlasHooked then atlasHooked = SetupAtlasLootBadges() end
     ScheduleRefresh()
   end
@@ -5291,7 +5299,13 @@ SlashCmdList["STATCOACH"] = function(msg)
     print("|cffffd100StatCoach|r: tooltip verdict " .. (StatCoachDB.tooltip and "ON" or "OFF") .. ".")
   elseif msg == "bag" then
     SetupBaganatorBadge()
-    print("|cffffd100StatCoach|r bag badge: " .. (UI.bagStatus or "not attempted yet"))
+    if ns.BetterBags then ns.BetterBags:Setup() end
+    print("|cffffd100StatCoach|r Baganator badge: " .. (UI.bagStatus or "not attempted yet"))
+    if RETAIL then
+      local betterBags = ns.BetterBags
+      print("|cffffd100StatCoach|r BetterBags upgrade icon: "
+        .. (betterBags and betterBags.status or "integration not loaded"))
+    end
   elseif msg == "caps" then
     print("|cffffd100StatCoach|r cap tooltips: " .. tostring(UI.capRowsHooked or "not active (retail has no caps)"))
   elseif msg == "stats" then
