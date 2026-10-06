@@ -662,9 +662,10 @@ local function cannotEquip(link)
   local itemRank = ARMOR_RANK[subclassID]
   if not itemRank then return false end
   -- Classic trains plate and mail at 40; until then the ceiling is one tier lower,
-  -- which is why a level 30 hunter must not be sent after mail either.
+  -- which is why a level 30 hunter must not be sent after mail either. Forever runs the
+  -- Vanilla rules on the retail engine: the same there.
   local ceiling = pref
-  if not RETAIL and pref >= 3 and (UnitLevel("player") or 1) < 40 then ceiling = pref - 1 end
+  if (not RETAIL or FOREVER) and pref >= 3 and (UnitLevel("player") or 1) < 40 then ceiling = pref - 1 end
   return itemRank > ceiling
 end
 
@@ -1257,7 +1258,7 @@ local function CalibLog(link, equipLoc, r, role, weights, s)
 end
 
 local function evalItem(link)
-  if FOREVER then return nil end   -- no verdicts without data: see the FOREVER path
+  if FOREVER then return ns.ForeverEvalItem and ns.ForeverEvalItem(link) or nil end   -- see the FOREVER path
   if MISTS then return nil end     -- Mists: caps and priority first, item verdicts later
   if ns.ERA then return nil end    -- Era: the same
   if RETAIL then return retailEvalItem(link) end
@@ -2813,22 +2814,307 @@ end
 -- that weapon. It is the same constant Blizzard's sheet uses for Defense.
 local FOREVER_CRIT_PER_SKILL = 0.04
 
+-- Forever's spec and item verdicts. Forever has ONE specialization per class (named after
+-- the class) and keeps the three classic talent trees inside one trait tree, so the game
+-- cannot be asked which tree you play: StatCoach adds up the ranks you bought per tree, by
+-- talent name (StatCoachData_Forever.lua). The stat list for that tree is Era's (Wowhead
+-- Classic) until Forever's own level-60 guides exist, with Forever's own guide where Classic
+-- has none. Everything lives on ns: this file sits at Lua's limit of 200 locals per chunk.
+do
+  local function isSecretValue(v) return issecretvalue ~= nil and issecretvalue(v) and true or false end
+  -- Ranks bought per tree. detail = also list every talent with ranks, for /stc dump.
+  -- Cached until the talents change (the event handler clears ns.foreverTalents).
+  ns.ForeverTalentPoints = function(detail)
+    if ns.foreverTalents and not detail then return ns.foreverTalents end
+    local out = { pts = { 0, 0, 0 }, unmatched = {}, nodes = 0 }
+    local _, class = UnitClass("player")
+    local map = D.forever and D.forever.talentTree and D.forever.talentTree[class or ""]
+    local CT, TR = C_ClassTalents, C_Traits
+    if not (map and CT and TR and CT.GetActiveConfigID and TR.GetConfigInfo and TR.GetTreeNodes
+            and TR.GetNodeInfo and TR.GetEntryInfo and TR.GetDefinitionInfo) then
+      out.missing = true
+      ns.foreverTalents = out
+      return out
+    end
+    local configID = safe(CT.GetActiveConfigID)
+    local cfg = configID and safe(TR.GetConfigInfo, configID)
+    local treeID = type(cfg) == "table" and type(cfg.treeIDs) == "table" and cfg.treeIDs[1] or nil
+    local nodes = treeID and safe(TR.GetTreeNodes, treeID)
+    out.configID, out.treeID = configID, treeID
+    if detail then out.talents = {} end
+    local spellName = (C_Spell and C_Spell.GetSpellName) or GetSpellInfo
+    for _, nodeID in ipairs(type(nodes) == "table" and nodes or {}) do
+      local node = safe(TR.GetNodeInfo, configID, nodeID)
+      if type(node) == "table" then
+        out.nodes = out.nodes + 1
+        local ranks = tonumber(desecret(node.ranksPurchased)) or 0
+        local entryID = (type(node.activeEntry) == "table" and node.activeEntry.entryID)
+          or (type(node.entryIDs) == "table" and node.entryIDs[1]) or nil
+        local entry = entryID and safe(TR.GetEntryInfo, configID, entryID)
+        local def = type(entry) == "table" and entry.definitionID and safe(TR.GetDefinitionInfo, entry.definitionID)
+        local name
+        if type(def) == "table" then
+          name = def.overrideName
+          if (type(name) ~= "string" or name == "") and def.spellID and spellName then name = safe(spellName, def.spellID) end
+        end
+        if isSecretValue(name) or type(name) ~= "string" or name == "" then name = nil end
+        local tree = name and map[name]
+        if tree then out.pts[tree] = out.pts[tree] + ranks
+        elseif name and #out.unmatched < 60 then out.unmatched[#out.unmatched + 1] = name end
+        if detail and ranks > 0 then
+          out.talents[#out.talents + 1] = string.format("%s %d/%s tree %s", name or ("node " .. tostring(nodeID)),
+            ranks, tostring(desecret(node.maxRanks)), tostring(tree or "?"))
+        end
+      end
+    end
+    if not detail then ns.foreverTalents = out end
+    return out
+  end
+
+  -- Era's entry for the tree, with Forever's own fields laid over it where it has any
+  ns.ForeverSpec = function(class, spec)
+    local cd = D.era and D.era.classes and D.era.classes[class or ""]
+    local base = cd and cd.specs and cd.specs[spec or ""]
+    if not base then return nil end
+    local over = D.forever and D.forever.specs and D.forever.specs[class or ""]
+    over = over and over[spec]
+    if not over then return base end
+    local m = {}
+    for k, v in pairs(base) do m[k] = v end
+    for k, v in pairs(over) do m[k] = v end
+    return m
+  end
+
+  -- Class, spec name, spec data, detected spec. AUTO = the tree with the most points (a feral
+  -- druid in Bear Form gets the bear list); MANUAL browses like on every other client.
+  ns.ForeverPick = function()
+    local E = D.era
+    local _, class = UnitClass("player")
+    local cd = E and E.classes and E.classes[class or ""]
+    local detected
+    if cd then
+      local t = ns.ForeverTalentPoints()
+      local best, bestPts = nil, 0
+      for i = 1, 3 do
+        if t.pts[i] > bestPts then best, bestPts = i, t.pts[i] end
+      end
+      detected = best and cd.tabSpec[best]
+      if detected == "Feral (Cat)" then
+        local form = safe(GetShapeshiftFormID)
+        if form == 5 or form == 8 then detected = "Feral (Bear)" end
+      end
+    end
+    local pc, ps = class, detected
+    local db = StatCoachDB
+    if db and db.manual and E then
+      if E.classes[db.manualClass or ""] then pc = db.manualClass end
+      local pcd = E.classes[pc or ""]
+      ps = (pcd and pcd.specs[db.manualSpec or ""] and db.manualSpec) or (pcd and pcd.specOrder[1])
+    end
+    return pc, ps, ns.ForeverSpec(pc, ps), detected
+  end
+
+  -- What one point of a stat costs on a Vanilla-style item, against one point of a primary
+  -- stat (the usual Vanilla item-budget prices; % stats per 1%). With the spec's list it
+  -- decides what an item is worth: the list's first stat counts in full, each step down
+  -- 0.15 less (never under 0.25), a stat the list leaves out 0.1.
+  local BUDGET = {
+    Strength = 1, Agility = 1, Stamina = 1, Intellect = 1, Spirit = 1,
+    ["Attack Power"] = 0.5, Hit = 10, Crit = 14, ["Spell Hit"] = 8, ["Spell Crit"] = 14,
+    ["Spell Damage"] = 0.86, ["Healing Power"] = 0.45, MP5 = 2.5, Armor = 0.03,
+    Defense = 1.5, Dodge = 12, Parry = 15, Block = 5, ["Block Value"] = 0.65,
+    ["Spell Penetration"] = 0.5,
+  }
+  -- A weapon's damage per second, in the same units: one DPS is fourteen attack power, which
+  -- is seven points of a primary stat. Weapon damage heads every melee and hunter list in
+  -- Forever's own guides (Icy Veins, Sep 2026).
+  local DPS_BUDGET = 7
+  local KEYS = {
+    ITEM_MOD_STRENGTH_SHORT = "Strength", ITEM_MOD_AGILITY_SHORT = "Agility",
+    ITEM_MOD_STAMINA_SHORT = "Stamina", ITEM_MOD_INTELLECT_SHORT = "Intellect",
+    ITEM_MOD_SPIRIT_SHORT = "Spirit", ITEM_MOD_ATTACK_POWER_SHORT = "Attack Power",
+    ITEM_MOD_SPELL_HEALING_DONE_SHORT = "Healing Power", ITEM_MOD_SPELL_DAMAGE_DONE_SHORT = "Spell Damage",
+    ITEM_MOD_POWER_REGEN0_SHORT = "MP5", ITEM_MOD_MANA_REGENERATION_SHORT = "MP5",
+    ITEM_MOD_BLOCK_VALUE_SHORT = "Block Value", ITEM_MOD_DEFENSE_SKILL_RATING_SHORT = "Defense",
+    RESISTANCE0_NAME = "Armor",
+  }
+  -- The chances an item gives are read off its tooltip, where the game says them in percent
+  -- ("Equip: Improves your chance to hit by 1%."); the item-stats call did not show one on
+  -- the beta (6 Oct 2026). English wordings, like the other tooltip fallbacks here.
+  local LINES = {
+    { "improves your chance to hit with spells by (%d+)%%", "Spell Hit" },
+    { "improves your chance to get a critical strike with spells by (%d+)%%", "Spell Crit" },
+    { "improves your chance to hit by (%d+)%%", "Hit" },
+    { "improves your chance to get a critical strike by (%d+)%%", "Crit" },
+    { "increases your chance to dodge an attack by (%d+)%%", "Dodge" },
+    { "increases your chance to parry an attack by (%d+)%%", "Parry" },
+    { "increases your chance to block attacks with a shield by (%d+)%%", "Block" },
+  }
+  -- Used only when the item-stats call has none of these
+  local FALLBACK = {
+    { "increases damage and healing done by magical spells and effects by up to (%d+)", "both" },
+    { "increases healing done by spells and effects by up to (%d+)", "Healing Power" },
+    { "restores (%d+) mana per 5 sec", "MP5" },
+    { "increased defense %+(%d+)", "Defense" },
+  }
+
+  -- Everything one item gives: { [stat name] = amount, dps = n }
+  ns.ForeverItemStats = function(link)
+    local out = {}
+    local stats = safe((C_Item and C_Item.GetItemStats) or GetItemStats, link)
+    if type(stats) == "table" then
+      for key, v in pairs(stats) do
+        local name = KEYS[key]
+        v = tonumber(desecret(v))
+        if v then
+          if name then out[name] = (out[name] or 0) + v
+          elseif key == "ITEM_MOD_SPELL_POWER_SHORT" then
+            out["Spell Damage"] = (out["Spell Damage"] or 0) + v
+            out["Healing Power"] = (out["Healing Power"] or 0) + v
+          elseif key == "ITEM_MOD_DAMAGE_PER_SECOND_SHORT" then out.dps = v end
+        end
+      end
+    end
+    scanTip:SetOwner(UIParent, "ANCHOR_NONE")
+    scanTip:ClearLines()
+    if pcall(scanTip.SetHyperlink, scanTip, link) then
+      for i = 2, scanTip:NumLines() do
+        local fs = _G["StatCoachScanTipTextLeft" .. i]
+        local text = fs and fs:GetText()
+        if type(text) == "string" and not isSecretValue(text) then
+          local low = text:lower()
+          for _, p in ipairs(LINES) do
+            local n = tonumber(low:match(p[1]))
+            if n then out[p[2]] = (out[p[2]] or 0) + n; break end
+          end
+          for _, p in ipairs(FALLBACK) do
+            local n = tonumber(low:match(p[1]))
+            if n then
+              if p[2] == "both" then
+                if not out["Spell Damage"] then out["Spell Damage"] = n end
+                if not out["Healing Power"] then out["Healing Power"] = n end
+              elseif not out[p[2]] then out[p[2]] = n end
+              break
+            end
+          end
+        end
+      end
+    end
+    if not out.dps then out.dps = getWeaponDPS(link) end
+    return out
+  end
+
+  ns.ForeverItemScore = function(link, sd, equipLoc)
+    local w = {}
+    for i, st in ipairs(sd.stats or {}) do w[st] = math.max(0.25, 1 - (i - 1) * 0.15) end
+    local s = ns.ForeverItemStats(link)
+    local score = 0
+    for name, v in pairs(s) do
+      if BUDGET[name] then score = score + v * BUDGET[name] * (w[name] or 0.1) end
+    end
+    -- weapon damage counts for the hands the spec fights with
+    local loc = equipLoc or select(4, GetItemInfoInstant(link))
+    local melee = sd.attack == "melee" and MELEE_WEAPONS[loc]
+    local ranged = sd.attack == "ranged" and RANGED_WEAPONS[loc]
+    if s.dps and (melee or ranged) then score = score + s.dps * DPS_BUDGET end
+    return score
+  end
+
+  -- Which equipped slots a new item competes with, and whether their scores add up
+  local function slots(equipLoc)
+    local mh = GetInventoryItemLink("player", 16)
+    local oh = GetInventoryItemLink("player", 17)
+    local mhLoc = mh and select(4, GetItemInfoInstant(mh))
+    local ohLoc = oh and select(4, GetItemInfoInstant(oh))
+    if equipLoc == "INVTYPE_2HWEAPON" then
+      if oh then return { 16, 17 }, true end          -- must beat both hands together
+      return { 16 }, false
+    end
+    if mhLoc == "INVTYPE_2HWEAPON" then
+      -- an off-hand means giving up the two-hander: a loadout choice, not an upgrade
+      if equipLoc == "INVTYPE_SHIELD" or equipLoc == "INVTYPE_WEAPONOFFHAND" or equipLoc == "INVTYPE_HOLDABLE" then return nil end
+      if equipLoc == "INVTYPE_WEAPON" or equipLoc == "INVTYPE_WEAPONMAINHAND" then return { 16 }, false end
+    end
+    if equipLoc == "INVTYPE_WEAPON" then
+      -- one hand: the main hand, or either hand while dual wielding
+      if ohLoc == "INVTYPE_WEAPON" or ohLoc == "INVTYPE_WEAPONOFFHAND" then return { 16, 17 }, false end
+      return { 16 }, false
+    end
+    return SLOTMAP[equipLoc], false
+  end
+
+  ns.ForeverEvalItem = function(link)
+    local sd = ns.fvSd
+    if not sd or not sd.stats or #sd.stats == 0 or type(GetItemInfoInstant) ~= "function" then return nil end
+    local equipLoc = select(4, GetItemInfoInstant(link))
+    if not equipLoc or not SLOTMAP[equipLoc] then return nil end
+    if cannotEquip(link) or ClassLocked(link) then return nil end
+    -- a tank holds a shield: a two-hander is not its upgrade
+    local _, class = UnitClass("player")
+    if sd.role == "TANK" and equipLoc == "INVTYPE_2HWEAPON" and (class == "WARRIOR" or class == "PALADIN") then return nil end
+    local list, combined = slots(equipLoc)
+    if not list then return nil end
+    -- the item you are wearing is not its own upgrade - not even over an empty second ring
+    -- slot (beta dump, 6 Oct 2026: the worn ring read as "empty slot")
+    for _, slot in ipairs(list) do
+      if GetInventoryItemLink("player", slot) == link then return nil end
+    end
+    local name = GetItemInfo(link) or (link:match("%[(.-)%]")) or "item"
+    local itemScore = ns.ForeverItemScore(link, sd, equipLoc)
+    local eqScore
+    for _, slot in ipairs(list) do
+      local eqLink = GetInventoryItemLink("player", slot)
+      local sc = eqLink and ns.ForeverItemScore(eqLink, sd) or 0   -- an empty slot scores 0
+      if combined then eqScore = (eqScore or 0) + sc
+      elseif not eqScore or sc < eqScore then eqScore = sc end
+    end
+    local eq = eqScore or 0
+    local delta = itemScore - eq
+    return { name = name, delta = delta, pct = (eq > 0) and (delta / eq * 100) or nil }
+  end
+end
+
 local function RefreshForever()
   if not UI.frame then return end
+  -- class = what you are (skills, caps); pickClass/specName/sd = the list shown, which
+  -- MANUAL can browse to another class. Verdicts only ever judge your own class's list.
   local _, class = UnitClass("player")
+  local pickClass, specName, sd = ns.ForeverPick()
   curCtx.role = nil
   curCtx.weights = {}
-  curCtx.retailSd = false         -- no verdicts on Forever until there is data to stand on
+  curCtx.retailSd = false
+  ns.fvSd = (pickClass == class) and sd or nil
   wipe(bagCache)
   UI.gemBtn:Hide(); UI.enchBtn:Hide(); UI.ctxBtn:Hide()
-  UI.row1:Hide(); UI.row2:Hide()  -- class/spec browsing has nothing to browse yet
+  UI.row2:Hide()
   UI.radar:Hide()
   UI.compareHeader:Hide(); UI.compareLine:Hide()
 
   local level = UnitLevel("player") or 1
-  local cc = (RAID_CLASS_COLORS and class and RAID_CLASS_COLORS[class]) or { r = 1, g = 1, b = 1 }
+  local cc = (RAID_CLASS_COLORS and pickClass and RAID_CLASS_COLORS[pickClass]) or { r = 1, g = 1, b = 1 }
   local hex = string.format("%02x%02x%02x", cc.r * 255, cc.g * 255, cc.b * 255)
-  UI.info:SetText(string.format("Lv %d  |cff%s%s|r  \226\128\162  Forever", level, hex, class or "?"))
+  UI.info:SetText(string.format("Lv %d  |cff%s%s|r  \226\128\162  %s  \226\128\162  Forever",
+    level, hex, pickClass or "?", specName or "no talents yet"))
+
+  -- Class / spec row: AUTO follows your talent points, MANUAL browses
+  local manual = StatCoachDB.manual
+  UI.row1:Show()
+  UI.classBtn:SetLabel(pickClass or "?")
+  UI.specBtn:SetLabel(specName or "?")
+  UI.autoBtn:SetLabel(manual and "|cffffff00MANUAL|r" or "|cff40ff40AUTO|r")
+  UI.classBtn:SetAlpha(manual and 1 or 0.45)
+  UI.specBtn:SetAlpha(manual and 1 or 0.45)
+  UI.specBtn:SetPoint("LEFT", UI.classBtn, "RIGHT", 4, 0)
+  UI.autoBtn:ClearAllPoints()
+  UI.autoBtn:SetPoint("RIGHT", UI.autoBtn:GetParent(), "RIGHT", 0, 0)
+  do
+    local rowW = UI.autoBtn:GetParent():GetWidth() or 0
+    local maxSpec = rowW - UI.classBtn:GetWidth() - UI.autoBtn:GetWidth() - 12
+    if maxSpec > 40 and UI.specBtn:GetWidth() > maxSpec then
+      UI.specBtn:SetWidth(maxSpec)
+      UI.specBtn.text:SetWidth(maxSpec - 12)
+    end
+  end
 
   -- Your numbers, computed the way Forever's own character sheet computes them
   -- (Blizzard_UIPanels_Game/Camelot/PaperDollFrameStats.lua): hit is rating bonus
@@ -2896,11 +3182,67 @@ local function RefreshForever()
       lines[#lines + 1] = "Block  " .. pct(chance) .. (value and ("  |cff888888blocks " .. math.floor(value + 0.5) .. "|r") or "")
     end
   end
-  UI.prioHeader:SetText("|cffffd100YOUR NUMBERS|r")
-  for i = 1, PRIO_MAX do
-    local t, e = UI.prio[i], lines[i]
-    if e then t:SetText("|cffaaaaaa" .. e .. "|r"); t:Show()
-    else t:SetText(""); t:Hide() end
+  local list = (sd and sd.stats) or {}
+  if #list > 0 then
+    -- The tree's stat list, each with your own number next to it
+    local function p2(v) v = desecret(v); return v and string.format("%.2f%%", v) or nil end
+    local function big(v)
+      v = desecret(v)
+      if not v then return nil end
+      v = math.floor(v + 0.5)
+      return (type(BreakUpLargeNumbers) == "function" and BreakUpLargeNumbers(v)) or tostring(v)
+    end
+    local function unitStat(i) local _, eff = safe(UnitStat, "player", i); return eff end
+    local function lowestSchool(fn)
+      local m
+      for school = 2, 7 do
+        local v = desecret(safe(fn, school))
+        if v and (not m or v < m) then m = v end
+      end
+      return m
+    end
+    local ranged = class == "HUNTER"
+    local VALUE = {
+      Strength = function() return big(unitStat(1)) end,
+      Agility = function() return big(unitStat(2)) end,
+      Stamina = function() return big(unitStat(3)) end,
+      Intellect = function() return big(unitStat(4)) end,
+      Spirit = function() return big(unitStat(5)) end,
+      Hit = function() return p2(ranged and hitRanged or hitMelee) end,
+      ["Spell Hit"] = function() return p2(hitSpell) end,
+      Crit = function() return p2(safe(ranged and GetRangedCritChance or GetCritChance)) end,
+      ["Spell Crit"] = function() return p2(lowestSchool(GetSpellCritChance)) end,
+      ["Attack Power"] = function()
+        local b, p, n = safe(ranged and UnitRangedAttackPower or UnitAttackPower, "player")
+        if b == nil then return nil end
+        return big(num(desecret(b)) + num(desecret(p)) + num(desecret(n)))
+      end,
+      ["Spell Damage"] = function() return big(lowestSchool(GetSpellBonusDamage)) end,
+      ["Healing Power"] = function() return big(safe(GetSpellBonusHealing)) end,
+      Armor = function() local _, eff = safe(UnitArmor, "player"); return big(eff) end,
+      Dodge = function() return p2(safe(GetDodgeChance)) end,
+      Parry = function() return p2(safe(GetParryChance)) end,
+      Defense = function() local b, m = safe(UnitDefense, "player"); return b and big(num(desecret(b)) + num(desecret(m))) end,
+      Haste = function() return p2(safe(ranged and GetRangedHaste or GetMeleeHaste)) end,
+    }
+    local forever = type(sd.source) == "string" and sd.source:find("Forever", 1, true)
+    UI.prioHeader:SetText("|cffffd100YOUR STATS, IN ORDER|r  |cff888888(" ..
+      (forever and "Forever guide" or "Classic list for now") .. ")|r")
+    for i = 1, PRIO_MAX do
+      local t, st = UI.prio[i], list[i]
+      if st then
+        local v = VALUE[st] and VALUE[st]()
+        t:SetText("|cffaaaaaa" .. i .. ".|r  " .. st .. (v and ("  |cffffffff" .. v .. "|r") or ""))
+        t:Show()
+      else t:SetText(""); t:Hide() end
+    end
+  else
+    UI.prioHeader:SetText("|cffffd100YOUR NUMBERS|r")
+    for i = 1, PRIO_MAX do
+      local t, e = UI.prio[i], lines[i]
+      if e then t:SetText("|cffaaaaaa" .. e .. "|r"); t:Show()
+      else t:SetText(""); t:Hide() end
+    end
   end
 
   -- HIT: one bar per attack type the class fights with, against what the game says
@@ -3023,14 +3365,18 @@ local function RefreshForever()
     "maximum is five per character level.",
     string.format("DEFENSE. The game's Defense tooltip says %d Defense makes you immune to critical strikes " ..
       "from raid bosses. Crushing blows come from enemies three or more levels above you.", defCap),
-    "Stat priorities and upgrade verdicts are still switched off on Forever: the published guides do not " ..
-    "agree yet, and a copied list would be a guess. They come back on real data.",
+    (#list > 0) and ("STAT LIST. " .. (sd.notes or "") .. " " .. (sd.source or "") .. " Forever's own guides " ..
+      "have no level-60 order yet, so until they do, this list and the upgrade line on item tooltips follow " ..
+      "it - with weapon damage first for melee and hunters, as Forever's guides put it.")
+      or "STAT LIST. Spend a talent point and StatCoach reads your tree from it - or pick one with the " ..
+      "buttons above. Upgrade lines on item tooltips follow the list of your tree.",
   }
   if UI.notesPopup and UI.notesPopup:IsShown() then RefreshNotes("Forever") end
 
   -- Layout: what you can act on first (NOW, hit, weapon skill), your raw numbers last
   local y = -34
   PlaceRow(UI.info, y); y = y - math.max(UI.info:GetStringHeight() + 4, 18)
+  PlaceRow(UI.row1, y); y = y - 24
   PlaceRow(UI.nowLine, y); y = y - (UI.nowLine:GetStringHeight() + 8)
   if #hitRows > 0 then
     PlaceRow(UI.fvHitHeader, y); y = y - math.max(UI.fvHitHeader:GetStringHeight() + 5, 18)
@@ -3940,12 +4286,14 @@ local function indexOf(t, v) for i, x in ipairs(t) do if x == v then return i en
 -- The two flavors browse different rosters: retail has 13 classes and 39 specs,
 -- classic the 9 TBC ones. Everything below works off whichever pair applies.
 local function browseTables()
+  if FOREVER then return D.era.classOrder, D.era.classes end
   if RETAIL or MISTS then local r = ns.SpecData(); return r.classOrder, r.classes end
   if ns.ERA then return D.era.classOrder, D.era.classes end
   return D.classOrder, D.classes
 end
 
 local function currentPick()
+  if FOREVER then local c, s = ns.ForeverPick(); return c, s end
   if RETAIL or MISTS then local c, s = RetailDetect(); return c, s end
   if ns.ERA then local c, s = ns.EraPick(); return c, s end
   local c, s = Resolve(); return c, s
@@ -5098,12 +5446,15 @@ if MISTS then pcall(ev.RegisterEvent, ev, "PLAYER_SPECIALIZATION_CHANGED") end
 if FOREVER then
   pcall(ev.RegisterEvent, ev, "SKILL_LINES_CHANGED")
   pcall(ev.RegisterEvent, ev, "UPDATE_SHAPESHIFT_FORM")   -- a druid's line follows Bear and Cat Form
+  pcall(ev.RegisterEvent, ev, "TRAIT_CONFIG_UPDATED")     -- the talent points decide the tree
+  pcall(ev.RegisterEvent, ev, "PLAYER_TALENT_UPDATE")
 end
 if ns.ERA then
   pcall(ev.RegisterEvent, ev, "SKILL_LINES_CHANGED")
   pcall(ev.RegisterEvent, ev, "UPDATE_SHAPESHIFT_FORM")   -- a feral druid's list follows bear form
 end
 ev:SetScript("OnEvent", function(_, event, arg1)
+  if FOREVER and event ~= "ADDON_LOADED" and event ~= "COMBAT_RATING_UPDATE" then ns.foreverTalents = nil end
   if event == "ADDON_LOADED" and arg1 == ADDON then
     StatCoachDB = StatCoachDB or {}
     local db = StatCoachDB
@@ -5271,6 +5622,65 @@ local function DumpPanel()
       defense = v(UnitDefense, "player"), crit = v(GetCritChance), rangedCrit = v(GetRangedCritChance),
       spellCrit = spellCrit, talents = talents, gear = gear,
     }
+  end
+  if FOREVER then
+    -- What an item gives us to score on this engine: the ITEM_MOD_* stats the API
+    -- returns, its tooltip lines, its level and DPS - for everything worn and carried.
+    -- Forever's verdict line will stand on this reading (2 Oct 2026). A secret value
+    -- is written as the word, never the value.
+    local function sec(x)
+      if issecretvalue and issecretvalue(x) then return "<secret>" end
+      return x
+    end
+    local getStats = (C_Item and C_Item.GetItemStats) or GetItemStats
+    local getInstant = (C_Item and C_Item.GetItemInfoInstant) or GetItemInfoInstant
+    local getLevel = (C_Item and C_Item.GetDetailedItemLevelInfo) or GetDetailedItemLevelInfo
+    local getLink = (C_Container and C_Container.GetContainerItemLink) or GetContainerItemLink
+    local getSlots = (C_Container and C_Container.GetContainerNumSlots) or GetContainerNumSlots
+    local items = {}
+    local function add(where, link)
+      if type(link) ~= "string" or #items >= 40 then return end
+      local stats = {}
+      local ok, t = pcall(getStats, link)
+      if ok and type(t) == "table" then
+        for k, v in pairs(t) do
+          local okK, key = pcall(tostring, k)
+          stats[okK and key or "?"] = sec(v)
+        end
+      else stats.error = tostring(t) end
+      local lines = {}
+      scanTip:SetOwner(UIParent, "ANCHOR_NONE")
+      scanTip:ClearLines()
+      if pcall(scanTip.SetHyperlink, scanTip, link) then
+        for i = 1, math.min(scanTip:NumLines(), 16) do
+          local fs = _G["StatCoachScanTipTextLeft" .. i]
+          local text = fs and fs:GetText()
+          if text then lines[#lines + 1] = sec(text) end
+        end
+      end
+      local okI, _, _, _, equipLoc, _, classID, subID = pcall(getInstant, link)
+      local okL, ilvl = pcall(getLevel, link)
+      items[#items + 1] = { where = where, link = link, equipLoc = okI and equipLoc or nil,
+        classID = okI and classID or nil, subID = okI and subID or nil,
+        ilvl = okL and sec(ilvl) or nil, dps = getWeaponDPS(link), stats = stats, lines = lines }
+    end
+    for slot = 1, 18 do add("slot" .. slot, GetInventoryItemLink("player", slot)) end
+    for bag = 0, 4 do
+      for s = 1, tonumber(safe(getSlots, bag)) or 0 do add("bag" .. bag .. "/" .. s, safe(getLink, bag, s)) end
+    end
+    local t = ns.ForeverTalentPoints(true)
+    local pc, ps, _, detected = ns.ForeverPick()
+    local scores = {}
+    for _, it in ipairs(items) do
+      local r = ns.ForeverEvalItem(it.link)
+      if r then scores[#scores + 1] = string.format("%s: delta %.1f pct %s", r.name, r.delta, r.pct and string.format("%.1f", r.pct) or "empty slot") end
+    end
+    d.raw = { interface = select(4, GetBuildInfo()), project = WOW_PROJECT_ID,
+              getItemStats = getStats and "present" or "absent", items = items,
+              talents = { configID = t.configID, treeID = t.treeID, nodes = t.nodes, missing = t.missing,
+                          pts = t.pts, unmatched = t.unmatched, bought = t.talents,
+                          pick = (pc or "?") .. " / " .. (ps or "none"), detected = detected },
+              verdicts = scores }
   end
   StatCoachDB.panelDump = d
   print("|cffffd100StatCoach|r: panel written (" .. #d.bars .. " bars, " .. #d.lines .. " lines) - /reload saves it to disk.")

@@ -3,6 +3,26 @@
 
 ---
 
+# StatCoach 1.1.30 (Forever)
+
+*6 October 2026*
+
+## Your talent tree, its stats and your upgrades
+
+Forever has one specialization per class, so StatCoach now reads your talent tree from
+where you spend your points. The panel names it - Holy, Protection, Retribution and so on -
+and lists that tree's stats in order, each with your own number next to it. MANUAL browses
+the other trees and classes.
+
+Item tooltips and your bags show upgrades the way StatCoach does everywhere else -
+"UPGRADE (+12%)" - weighed by your tree's stat order, with weapon damage first for melee
+and hunters. Until Forever's own level-60 guides are out, the order is the Classic one for
+your tree; Protection paladins get the list from Forever's own tank guide, since Classic
+has none. Armor you cannot wear yet - plate before level 40, mail for hunters and shamans
+before 40 - is never suggested, and a tank holding a shield is not offered two-handers.
+
+---
+
 # StatCoach 1.1.29 (Forever)
 
 *2 October 2026*
