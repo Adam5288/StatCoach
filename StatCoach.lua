@@ -3259,7 +3259,18 @@ local function RefreshForever()
   local function hitRow(label, cur, cap)
     if cur and cap then hitRows[#hitRows + 1] = { label = label .. " vs " .. versus, cur = cur, cap = cap } end
   end
-  if SPELL_ONLY[class] then hitRow("Spell hit", hitSpell, target.spell)
+  -- Once your tree is known (your own class, AUTO or MANUAL), the bars follow it: the caps
+  -- that tree plays against and nothing else. A healer has no hit cap at all. Before the
+  -- first talent point the class decides, as it always did.
+  local own = sd ~= nil and pickClass == class
+  local attack = own and sd.attack or nil
+  local healer = own and sd.role == "HEALER"
+  local caster = (own and (attack == "spell" or healer)) or ((not own) and SPELL_ONLY[class])
+  if own then
+    if attack == "spell" then hitRow("Spell hit", hitSpell, target.spell)
+    elseif attack == "ranged" then hitRow("Ranged hit", hitRanged, target.melee)
+    elseif attack == "melee" then hitRow("Melee hit", hitMelee, target.melee) end
+  elseif SPELL_ONLY[class] then hitRow("Spell hit", hitSpell, target.spell)
   elseif class == "HUNTER" then hitRow("Ranged hit", hitRanged, target.melee)
   elseif HYBRID[class] then hitRow("Melee hit", hitMelee, target.melee); hitRow("Spell hit", hitSpell, target.spell)
   else hitRow("Melee hit", hitMelee, target.melee) end
@@ -3271,13 +3282,16 @@ local function RefreshForever()
   local weapons, defense = ForeverSkills()
   local skillRows = {}
   for _, sk in ipairs(weapons) do
-    if sk.equipped and (not SPELL_ONLY[class] or sk.id == 228) and #skillRows < BAR_MAX - #hitRows - 1 then
+    if sk.equipped and (not caster or sk.id == 228) and #skillRows < BAR_MAX - #hitRows - 1 then
       skillRows[#skillRows + 1] = sk
     end
   end
-  if defense and not SPELL_ONLY[class] then skillRows[#skillRows + 1] = defense end
+  -- Defense: a tank tree's cap; before a tree is known, every class that is hit in melee
+  if defense and ((own and sd.role == "TANK") or ((not own) and not SPELL_ONLY[class])) then
+    skillRows[#skillRows + 1] = defense
+  end
   local function critCost(sk)
-    if SPELL_ONLY[class] or sk.id == FOREVER_DEFENSE_ID or sk.rank >= sk.max then return 0 end
+    if caster or sk.id == FOREVER_DEFENSE_ID or sk.rank >= sk.max then return 0 end
     return (sk.max - sk.rank) * FOREVER_CRIT_PER_SKILL
   end
   -- Two decimals under 1%: at low level 0.16% and 0.24% are different answers, and
@@ -3340,10 +3354,12 @@ local function RefreshForever()
       mainHit.cur, mainHit.cap, aTarget, mainHit.cap - mainHit.cur)
   elseif mainHit and mainHit.cur >= mainHit.cap then
     now = "You never miss " .. aTarget .. " any more. More hit does nothing - put the budget elsewhere."
-  elseif top and not SPELL_ONLY[class] then
+  elseif healer then
+    now = "Healers have no hit cap." .. (list[1] and (" " .. list[1] .. " comes first for you.") or "")
+  elseif top and not caster then
     now = top.name .. " is at its maximum. Nothing to fix right now."
   else
-    now = "Nothing to fix right now."
+    now = "Nothing to fix right now." .. (list[1] and (" " .. list[1] .. " comes first for your tree.") or "")
   end
   UI.nowLine:SetText("|cffffd100NOW:|r |cffffffff" .. now .. "|r")
   UI.nowLine:Show()

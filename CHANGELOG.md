@@ -3,6 +3,20 @@
 
 ---
 
+# StatCoach 1.1.31 (Forever)
+
+*6 October 2026*
+
+## The bars follow your talent tree
+
+Once StatCoach knows your tree, the bars show the caps that tree plays against and nothing
+else: melee hit and the weapon in your hands for melee, Defense on top for tanks, spell hit
+for casters - and no cap bars for healers, who have no hit cap. Browsing another tree of
+your class with MANUAL shows its bars too. Before your first talent point, your class
+decides, as before.
+
+---
+
 # StatCoach 1.1.30 (Forever)
 
 *6 October 2026*
