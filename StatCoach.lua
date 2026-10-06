@@ -32,7 +32,6 @@ local FOREVER = ((select(4, GetBuildInfo()) or 0) >= 16000 and (select(4, GetBui
 -- FOREVER checks below take it off the retail path where the rules differ.
 local RETAIL = (WOW_PROJECT_ID ~= nil and WOW_PROJECT_MAINLINE ~= nil
                 and WOW_PROJECT_ID == WOW_PROJECT_MAINLINE) or FOREVER
-ns.IsRetail = RETAIL
 
 -- Mists of Pandaria Classic (5.5.x) has a project id of its own, so RETAIL is false
 -- there - but it is not TBC either: specializations like retail, hit and expertise
@@ -1401,12 +1400,6 @@ local function bagUpgradePct(link)
     bagCache[link] = c
   end
   return c or nil
-end
-
--- Internal integration API: consumers only need the yes/no bag verdict. Keep
--- the percentage and scoring details private to the core addon.
-ns.IsBagUpgrade = function(link)
-  return bagUpgradePct(link) ~= nil
 end
 
 -- Verdict label + colours (hex for panel, r,g,b for tooltip)
@@ -4064,6 +4057,12 @@ end
 -- Assigned further down, where the badge visuals live. Declared here because
 -- every settings switch above needs to redraw badges that are already up.
 local ApplyGlowBadge
+-- Assigned by the BetterBags integration once its event module is available.
+-- The native icon is calculated during a full item refresh, rather than while
+-- its decoration is being painted.
+function UI.GetBetterBagsDisplayMode()
+  return StatCoachDB and StatCoachDB.betterBagsDisplay == "flag" and "flag" or "badge"
+end
 
 -- Re-decides every badge that is currently on screen. Each one remembers the
 -- item it was drawn for, so this can simply ask the question again - which
@@ -4121,14 +4120,22 @@ local settingsMenuFrame
 local function ShowSettingsMenu(anchor)
   local db = StatCoachDB
   db.badges = db.badges or {}
+  local function refreshBagBadges()
+    RefreshBadges()
+    wipe(bagCache)
+    if UI.RequestBetterBagsRefresh then UI.RequestBetterBagsRefresh() end
+  end
   local function toggleSurface(key)
     -- Spelled out rather than an and/or one-liner: the value being flipped is
     -- false-or-nil, and that idiom cannot express it - "(x == false) or nil"
     -- evaluates to nil in both directions, so the switch never actually
     -- switched off. Absent still means on, so turning it back on removes the key.
     if db.badges[key] == false then db.badges[key] = nil else db.badges[key] = false end
-    RefreshBadges()
-    wipe(bagCache)
+    refreshBagBadges()
+  end
+  local function setBetterBagsDisplay(mode)
+    db.betterBagsDisplay = mode
+    refreshBagBadges()
   end
   local function applyScale(s) db.scale = s; if UI.frame then UI.frame:SetScale(s) end end
   local function resetPos()
@@ -4148,16 +4155,23 @@ local function ShowSettingsMenu(anchor)
       root:CreateCheckbox("Gem hint on empty sockets", function() return db.gemHints ~= false end,
         function() db.gemHints = (db.gemHints == false) or nil end)
       root:CreateCheckbox("Upgrade badges", function() return db.bagBadge end,
-        function() db.bagBadge = not db.bagBadge; RefreshBadges(); wipe(bagCache) end)
+        function() db.bagBadge = not db.bagBadge; refreshBagBadges() end)
       local where = root:CreateButton("Show badges in")
       for _, sf in ipairs(BADGE_SURFACES) do
         where:CreateCheckbox(sf[2], function() return db.badges[sf[1]] ~= false end,
           function() toggleSurface(sf[1]) end)
       end
+      local betterBagsSub = root:CreateButton("BetterBags upgrade display")
+      betterBagsSub:CreateRadio("StatCoach badge (tiers)", function()
+        return UI.GetBetterBagsDisplayMode() == "badge"
+      end, function() setBetterBagsDisplay("badge") end)
+      betterBagsSub:CreateRadio("BetterBags flag (native icon)", function()
+        return UI.GetBetterBagsDisplayMode() == "flag"
+      end, function() setBetterBagsDisplay("flag") end)
       local floorSub = root:CreateButton("Flag upgrades above")
       for _, f in ipairs(UPGRADE_FLOORS) do
         floorSub:CreateRadio(f[2], function() return (db.minUpgrade or 1) == f[1] end,
-          function() db.minUpgrade = f[1]; wipe(bagCache); RefreshBadges() end)
+          function() db.minUpgrade = f[1]; refreshBagBadges() end)
       end
       root:CreateCheckbox("Pulse the badge", function() return not db.noPulse end,
         function() db.noPulse = not db.noPulse or nil; RefreshBadges() end)
@@ -4172,7 +4186,7 @@ local function ShowSettingsMenu(anchor)
           function() db.iconSize = n end)
       end
       root:CreateCheckbox("Hide off-type armour entirely", function() return db.armorStrict end,
-        function() db.armorStrict = not db.armorStrict; wipe(bagCache); RefreshBadges() end)
+        function() db.armorStrict = not db.armorStrict; refreshBagBadges() end)
       local scaleSub = root:CreateButton("Window scale")
       for _, s in ipairs({ 0.9, 1.0, 1.1, 1.25 }) do
         scaleSub:CreateRadio(math.floor(s * 100) .. "%", function() return (db.scale or 1) == s end,
@@ -4195,7 +4209,7 @@ local function ShowSettingsMenu(anchor)
         checked = function() return db.gemHints ~= false end,
         func = function() db.gemHints = (db.gemHints == false) or nil end },
       { text = "Upgrade badges", keepShownOnClick = true, checked = function() return db.bagBadge end,
-        func = function() db.bagBadge = not db.bagBadge; RefreshBadges(); wipe(bagCache) end },
+        func = function() db.bagBadge = not db.bagBadge; refreshBagBadges() end },
       { text = "Show badges in", notCheckable = true, hasArrow = true, menuList = (function()
           local t = {}
           for _, sf in ipairs(BADGE_SURFACES) do
@@ -4205,11 +4219,17 @@ local function ShowSettingsMenu(anchor)
           end
           return t
         end)() },
+      { text = "BetterBags upgrade display", notCheckable = true, hasArrow = true, menuList = {
+        { text = "StatCoach badge (tiers)", checked = function() return UI.GetBetterBagsDisplayMode() == "badge" end,
+          func = function() setBetterBagsDisplay("badge") end },
+        { text = "BetterBags flag (native icon)", checked = function() return UI.GetBetterBagsDisplayMode() == "flag" end,
+          func = function() setBetterBagsDisplay("flag") end },
+      }},
       { text = "Flag upgrades above", notCheckable = true, hasArrow = true, menuList = (function()
           local t = {}
           for _, f in ipairs(UPGRADE_FLOORS) do
             t[#t + 1] = { text = f[2], checked = function() return (db.minUpgrade or 1) == f[1] end,
-              func = function() db.minUpgrade = f[1]; wipe(bagCache); RefreshBadges() end }
+              func = function() db.minUpgrade = f[1]; refreshBagBadges() end }
           end
           return t
         end)() },
@@ -4233,7 +4253,7 @@ local function ShowSettingsMenu(anchor)
         end)() },
       { text = "Hide off-type armour entirely", keepShownOnClick = true,
         checked = function() return db.armorStrict end,
-        func = function() db.armorStrict = not db.armorStrict; wipe(bagCache); RefreshBadges() end },
+        func = function() db.armorStrict = not db.armorStrict; refreshBagBadges() end },
       { text = "Window scale", notCheckable = true, hasArrow = true, menuList = {
         { text = "90%",  checked = function() return (db.scale or 1) == 0.9 end,  func = function() applyScale(0.9) end },
         { text = "100%", checked = function() return (db.scale or 1) == 1.0 end,  func = function() applyScale(1.0) end },
@@ -4460,6 +4480,162 @@ local function SetupBaganatorBadge()
   else
     UI.bagStatus = "register FAILED: " .. tostring(err)
   end
+end
+
+-- BetterBags: either draw StatCoach's tiered badge on the item decoration or
+-- supply its native boolean upgrade flag. The latter keeps BetterBags' own
+-- icon, while still using StatCoach's verdict and the "Bags" surface switch.
+------------------------------------------------------------------------
+local function SetupBetterBagsBadge()
+  if not RETAIL then return end
+  if UI.betterBagsDone then
+    UI.bagStatus = UI.betterBagsStatus
+    return
+  end
+
+  local function SetStatus(text, active)
+    UI.betterBagsStatus = text
+    if active then UI.bagStatus = text end
+  end
+
+  local libStub = rawget(_G, "LibStub")
+  if not libStub then
+    SetStatus("BetterBags not loaded")
+    return
+  end
+  if type(libStub) ~= "table" then
+    SetStatus("LibStub malformed (expected table, got " .. type(libStub) .. ")")
+    return
+  end
+  if type(libStub.GetLibrary) ~= "function" then
+    SetStatus("LibStub API missing GetLibrary (got " .. type(libStub.GetLibrary) .. ")")
+    return
+  end
+
+  local ok, aceAddon = pcall(libStub.GetLibrary, libStub, "AceAddon-3.0", true)
+  if not ok then
+    SetStatus("AceAddon-3.0 lookup failed: " .. tostring(aceAddon))
+    return
+  end
+  if not aceAddon then
+    SetStatus("AceAddon-3.0 library not registered")
+    return
+  end
+  if type(aceAddon.GetAddon) ~= "function" then
+    SetStatus("AceAddon-3.0 API missing GetAddon (got " .. type(aceAddon.GetAddon) .. ")")
+    return
+  end
+
+  local loaded, betterBags = pcall(aceAddon.GetAddon, aceAddon, "BetterBags", true)
+  if not loaded then
+    SetStatus("BetterBags lookup failed: " .. tostring(betterBags), true)
+    return
+  end
+  if not betterBags then
+    SetStatus("BetterBags addon not registered")
+    return
+  end
+  if type(betterBags.GetModule) ~= "function" then
+    SetStatus("BetterBags API missing GetModule (got " .. type(betterBags.GetModule) .. ")", true)
+    return
+  end
+
+  local found, events = pcall(betterBags.GetModule, betterBags, "Events", true)
+  if not found then
+    SetStatus("BetterBags Events lookup failed: " .. tostring(events), true)
+    return
+  end
+  if not events then
+    SetStatus("BetterBags Events module not registered", true)
+    return
+  end
+  if type(events.RegisterMessage) ~= "function" then
+    SetStatus("BetterBags Events API missing RegisterMessage (got " .. type(events.RegisterMessage) .. ")", true)
+    return
+  end
+
+  local foundItems, items = pcall(betterBags.GetModule, betterBags, "Items", true)
+  if not foundItems then
+    SetStatus("BetterBags Items lookup failed: " .. tostring(items), true)
+    return
+  end
+  if not items then
+    SetStatus("BetterBags Items module not registered", true)
+    return
+  end
+  if type(items.RegisterUpgradeProvider) ~= "function" then
+    SetStatus("BetterBags Items API missing RegisterUpgradeProvider (got " .. type(items.RegisterUpgradeProvider) .. ")", true)
+    return
+  end
+
+  -- BetterBags calls this while processing every item. Keep it boolean-only and
+  -- isolated: an error in StatCoach must be treated as "not an upgrade", never
+  -- interrupt BetterBags' item refresh.
+  local function IsStatCoachUpgrade(data)
+    local link = data and not data.isItemEmpty and data.itemInfo and data.itemInfo.itemLink
+    if not link or UI.GetBetterBagsDisplayMode() ~= "flag" or not BadgeSurfaceOn("bags") then return false end
+    local scored, pct = pcall(bagUpgradePct, link)
+    return scored and pct ~= nil
+  end
+
+  -- BetterBags recycles decorations, so update from its item lifecycle and hide
+  -- the existing holder when the cell is cleared. Both callbacks are isolated:
+  -- no StatCoach error is worth breaking the bag refresh.
+  local function UpdateInner(item, decoration)
+    if not decoration then return end
+    local holder = decoration.scBadge
+    if UI.GetBetterBagsDisplayMode() == "flag" then
+      if holder then HideBadge(holder) end
+      return
+    end
+    local data = item and item.GetItemData and item:GetItemData()
+    local link = data and not data.isItemEmpty and data.itemInfo and data.itemInfo.itemLink
+    local pct = (link and BadgeSurfaceOn("bags")) and bagUpgradePct(link) or nil
+    if pct then
+      if not holder then
+        holder = CreateGlowBadge(decoration, "bags")
+        holder:SetPoint("CENTER", decoration, "TOPLEFT", 5, -5)
+        decoration.scBadge = holder
+      end
+      holder:SetFrameLevel(decoration:GetFrameLevel() + 5)
+      holder.scLink = link
+      ApplyGlowBadge(holder, pct)
+      holder:Show()
+    elseif holder then
+      HideBadge(holder)
+    end
+  end
+
+  local function OnItemUpdated(_, item, decoration)
+    local updated, err = pcall(UpdateInner, item, decoration)
+    if updated then return end
+    if decoration and decoration.scBadge then pcall(HideBadge, decoration.scBadge) end
+    if not UI.betterBagsErrShown then
+      UI.betterBagsErrShown = true
+      SetStatus("badge skipped: " .. tostring(err), true)
+      print("|cffffd100StatCoach|r: badge skipped in BetterBags (" .. tostring(err) .. ")")
+    end
+  end
+
+  local function OnItemClearing(_, _, decoration)
+    if decoration and decoration.scBadge then pcall(HideBadge, decoration.scBadge) end
+  end
+
+  local registered, err = pcall(function()
+    items:RegisterUpgradeProvider("StatCoach", IsStatCoachUpgrade)
+    events:RegisterMessage("item/Updated", OnItemUpdated)
+    events:RegisterMessage("item/Clearing", OnItemClearing)
+  end)
+  if not registered then
+    SetStatus("BetterBags event registration failed: " .. tostring(err), true)
+    return
+  end
+
+  UI.betterBagsDone = true
+  UI.RequestBetterBagsRefresh = function()
+    pcall(events.SendMessage, events, "bags/FullRefreshAll")
+  end
+  SetStatus("registered OK - select StatCoach in BetterBags -> Upgrade Icon Provider for native flag", true)
 end
 
 -- Quest reward badges: the glow badge directly on the reward buttons, visible
@@ -5126,6 +5302,7 @@ ev:SetScript("OnEvent", function(_, event, arg1)
     if db.shown == nil then db.shown = true end
     if db.tooltip == nil then db.tooltip = true end
     if db.bagBadge == nil then db.bagBadge = true end
+    if db.betterBagsDisplay ~= "flag" and db.betterBagsDisplay ~= "badge" then db.betterBagsDisplay = "badge" end
     if db.scale == nil then db.scale = 1 end
     if db.armorStrict == nil then db.armorStrict = false end
     if db.iconSize == nil then db.iconSize = 14 end
@@ -5135,11 +5312,11 @@ ev:SetScript("OnEvent", function(_, event, arg1)
     if not db.shown then UI.frame:Hide() end
     Refresh()
     SetupBaganatorBadge()
-    if ns.BetterBags then ns.BetterBags:Setup() end
+    SetupBetterBagsBadge()
     atlasHooked = SetupAtlasLootBadges()
   elseif UI.frame then
     SetupBaganatorBadge()   -- retry until Baganator's API is available
-    if ns.BetterBags then ns.BetterBags:Setup() end  -- retry until BetterBags has initialized
+    SetupBetterBagsBadge()  -- retry until BetterBags has initialized
     if not atlasHooked then atlasHooked = SetupAtlasLootBadges() end
     ScheduleRefresh()
   end
@@ -5299,12 +5476,11 @@ SlashCmdList["STATCOACH"] = function(msg)
     print("|cffffd100StatCoach|r: tooltip verdict " .. (StatCoachDB.tooltip and "ON" or "OFF") .. ".")
   elseif msg == "bag" then
     SetupBaganatorBadge()
-    if ns.BetterBags then ns.BetterBags:Setup() end
-    print("|cffffd100StatCoach|r Baganator badge: " .. (UI.bagStatus or "not attempted yet"))
+    SetupBetterBagsBadge()
+    print("|cffffd100StatCoach|r bag badge: " .. (UI.bagStatus or "not attempted yet"))
     if RETAIL then
-      local betterBags = ns.BetterBags
       print("|cffffd100StatCoach|r BetterBags upgrade icon: "
-        .. (betterBags and betterBags.status or "integration not loaded"))
+        .. (UI.betterBagsStatus or "not attempted yet"))
     end
   elseif msg == "caps" then
     print("|cffffd100StatCoach|r cap tooltips: " .. tostring(UI.capRowsHooked or "not active (retail has no caps)"))
