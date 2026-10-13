@@ -1,8 +1,8 @@
-﻿## Interface: 120007, 120100
+﻿## Interface: 120007, 120100, 120105
 ## Title: StatCoach
 ## Notes: Live stat priority and cap-aware gear compare (retail + classic)
 ## Author: Adam
-## Version: 1.1.29
+## Version: 1.1.32
 ## SavedVariables: StatCoachDB
 ## IconTexture: Interface\AddOns\StatCoach\Media\logo
 ## X-Category: Combat
